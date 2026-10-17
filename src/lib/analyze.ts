@@ -154,6 +154,16 @@ function assignRoles(players: Player[]): Map<number, number> {
   const byFarm = [...players].sort((a, b) => farmWeight(b) - farmWeight(a));
   const laneOf = (player: Player) => lanes.get(player.slot)?.lane ?? 'unknown';
 
+  // Источники без парса (например, Valve) не отдают линии — тогда позиции
+  // определяем по объёму фарма: самый богатый игрок команды = P1, дальше по убыванию.
+  const hasLaneData = players.some((player) => laneOf(player) !== 'unknown');
+  if (!hasLaneData) {
+    byFarm.forEach((player, index) => {
+      roleMap.set(player.slot, Math.min(5, index + 1));
+    });
+    return roleMap;
+  }
+
   const assign = (player: Player | undefined, role: number) => {
     if (!player || used.has(player.slot) || roleMap.has(player.slot)) return;
     const taken = [...roleMap.values()];

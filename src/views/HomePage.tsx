@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleHelp,
+  Database,
   FileJson,
   Gauge,
   GraduationCap,
@@ -27,18 +28,19 @@ import { fmtDate, fmtNum, fmtTime, plural } from '../lib/format';
 import { matchPath } from '../lib/router';
 import { cacheMatch, getDemoCards } from '../lib/matchStore';
 import { MatchDataError, normalizeMatch, readJsonFiles } from '../lib/normalize';
+import { parseAccountInput, rankLabel, type RecentMatch } from '../lib/openDota';
 import {
-  ApiError,
-  fetchMatch,
-  fetchPlayer,
+  PROVIDERS,
+  fetchProfile,
+  providerLabel,
+  fetchRawMatch,
   fetchRecentMatches,
-  parseAccountInput,
-  rankLabel,
-  searchPlayers,
-  type PlayerProfile,
-  type PlayerSearchResult,
-  type RecentMatch,
-} from '../lib/openDota';
+  providerProblem,
+  suggestAccounts,
+  type AccountSuggestion,
+  type ProfileView,
+} from '../lib/dataSource';
+import { toAppError, type AppError } from '../lib/errors';
 import { HeroAvatar, RoleBadge, ScoreRing, SectionHeading, SIDE_COLOR } from '../components/ui';
 import { RadarChart } from '../components/charts';
 import demoRaw from '../data/demo/7490235544.json';
@@ -286,16 +288,47 @@ function Features() {
   );
 }
 
+function ProviderChips() {
+  const { settings, updateSettings, notify } = useApp();
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {PROVIDERS.map((provider) => (
+        <button
+          key={provider.key}
+          type="button"
+          onClick={() => {
+            if (provider.key === settings.provider) return;
+            updateSettings({ ...settings, provider: provider.key });
+            if (provider.key === 'steam' && !settings.steamKey.trim()) {
+              notify('Для Valve нужен бесплатный Steam Web API key — добавь его в настройках.', 'error');
+            }
+            if (provider.key === 'proxy' && !settings.proxyBase.trim()) {
+              notify('Для прокси укажи базовый URL в настройках.', 'error');
+            }
+          }}
+          className={`chip !py-1 text-[10px] ${settings.provider === provider.key ? 'chip-active' : ''}`}
+          title={provider.description}
+        >
+          {provider.short}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function MyMatchesPanel() {
   const { settings, updateSettings, navigate, notify } = useApp();
   const [input, setInput] = useState(settings.accountId ? String(settings.accountId) : '');
-  const [profile, setProfile] = useState<PlayerProfile | null>(null);
+  const [profile, setProfile] = useState<ProfileView | null>(null);
   const [matches, setMatches] = useState<RecentMatch[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [results, setResults] = useState<PlayerSearchResult[]>([]);
+  const [error, setError] = useState<AppError | null>(null);
+  const [results, setResults] = useState<AccountSuggestion[]>([]);
   const [searching, setSearching] = useState(false);
   const loadedRef = useRef(false);
+
+  const provider = PROVIDERS.find((item) => item.key === settings.provider);
+  const configError = providerProblem(settings);
 
   const runSearch = async (accountId: number) => {
     setLoading(true);
@@ -303,17 +336,13 @@ function MyMatchesPanel() {
     setResults([]);
     try {
       const [nextProfile, nextMatches] = await Promise.all([
-        fetchPlayer(accountId, settings.apiKey),
-        fetchRecentMatches(accountId, settings.apiKey, undefined, 8),
+        fetchProfile(accountId, settings),
+        fetchRecentMatches(accountId, settings, 8),
       ]);
       setProfile(nextProfile);
       setMatches(nextMatches ?? []);
     } catch (err) {
-      const message =
-        err instanceof ApiError
-          ? err.message
-          : 'Не удалось загрузить матчи. Проверь соединение или попробуй позже.';
-      setError(message);
+      setError(toAppError(err));
       setProfile(null);
       setMatches([]);
     } finally {
@@ -328,29 +357,46 @@ function MyMatchesPanel() {
       setInput(String(settings.accountId));
       void runSearch(settings.accountId);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.accountId]);
 
   const submit = async () => {
-    const parsed = parseAccountInput(input);
+    const value = input.trim();
+    if (!value) {
+      notify('Введи ник, SteamID64 или account_id.', 'error');
+      return;
+    }
+    if (configError) {
+      setError(configError);
+      return;
+    }
+    const parsed = parseAccountInput(value);
     if (parsed.accountId) {
       loadedRef.current = true;
       setInput(String(parsed.accountId));
       void runSearch(parsed.accountId);
       return;
     }
-    const nickname = input.trim();
-    if (nickname.length < 2) {
-      notify(parsed.error ?? 'Введи ник, SteamID64 или account_id.', 'error');
+    if (settings.provider === 'steam' && /steamcommunity\.com\/profiles\//i.test(value)) {
+      notify('Ссылка на профиль не распознана. Нужен SteamID64 или account_id.', 'error');
       return;
     }
     setSearching(true);
     setError(null);
     try {
-      const found = (await searchPlayers(nickname, settings.apiKey)) ?? [];
-      setResults(found.slice(0, 6));
-      if (!found.length) setError('Никого не нашли. Проверь ник или введи SteamID64.');
+      const found = await suggestAccounts(value, settings);
+      setResults(found);
+      if (!found.length) {
+        setError(
+          toAppError(
+            parsed.error ??
+              'Никого не нашли. Проверь написание или введи SteamID64 / account_id.',
+          ),
+        );
+      }
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось выполнить поиск по нику.');
+      setError(toAppError(err));
+      setResults([]);
     } finally {
       setSearching(false);
     }
@@ -360,45 +406,67 @@ function MyMatchesPanel() {
     <div className="panel p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="kicker">Из OpenDota</div>
-          <h2 className="display-title mt-1.5 text-xl text-white">Мои матчи</h2>
-          <p className="mt-1 text-[12px] text-ink-400">Ник, SteamID64, account_id или ссылка на профиль.</p>
+          <div className="kicker">Мои матчи</div>
+          <h2 className="display-title mt-1.5 text-xl text-white">Источник данных</h2>
+          <p className="mt-1 text-[11.5px] leading-relaxed text-ink-400">{provider?.description}</p>
         </div>
-        {profile && (
-          <button
-            type="button"
-            onClick={() => {
-              updateSettings({ ...settings, accountId: profile.account_id, playerName: profile.personaname ?? '' });
-              notify('Профиль сохранён — он будет загружаться автоматически.', 'success');
-            }}
-            className="btn-secondary !px-2.5 !py-1.5 text-[10px]"
-          >
-            <ShieldCheck size={12} /> Запомнить профиль
-          </button>
-        )}
+        <ProviderChips />
       </div>
 
-      <form
-        className="mt-4 flex gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          submit();
-        }}
-      >
+      <div className="mt-4 flex gap-2">
         <div className="relative flex-1">
           <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-500" />
           <input
             value={input}
             onChange={(event) => setInput(event.target.value)}
-            placeholder="Ник, SteamID64 или account_id"
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                void submit();
+              }
+            }}
+            placeholder={
+              settings.provider === 'steam'
+                ? 'SteamID64, account_id или короткое имя'
+                : 'Ник, SteamID64 или account_id'
+            }
             className="input !pl-9"
             aria-label="SteamID64 или account_id"
           />
         </div>
-        <button type="submit" className="btn-primary !px-4" disabled={loading || searching}>
+        <button type="button" onClick={() => void submit()} className="btn-primary !px-4" disabled={loading || searching}>
           {loading || searching ? <Loader2 size={15} className="animate-spin" /> : 'Найти'}
         </button>
-      </form>
+      </div>
+
+      {configError ? (
+        <div className="mt-3 rounded-xl border border-gold/25 bg-gold/[0.06] px-3 py-2.5 text-[11px] leading-relaxed text-gold/90">
+          {configError.message}{' '}
+          <a href="#/settings" className="font-semibold underline decoration-gold/40 underline-offset-2">
+            Открыть настройки
+          </a>
+          {configError.hint && <div className="mt-1 text-[10px] text-ink-400">{configError.hint}</div>}
+        </div>
+      ) : (
+        settings.provider === 'steam' && (
+          <div className="mt-2 flex items-center justify-between text-[9px] text-ink-500">
+            <span>Данные напрямую от Valve, ключ хранится локально</span>
+            <a href="#/settings" className="font-semibold text-lime/90 hover:text-lime">
+              {settings.steamKey ? 'Ключ добавлен' : 'Добавить ключ'}
+            </a>
+          </div>
+        )
+      )}
+
+      {error && (
+        <div className="mt-3 rounded-xl border border-dire/20 bg-dire/[0.05] px-3 py-2.5 text-[11px] leading-relaxed text-[#ffb3ae]">
+          {error.message}
+          {error.hint && <div className="mt-1 text-[10px] text-ink-400">{error.hint}</div>}
+          <a href="#/settings" className="ml-1 inline-block font-semibold underline underline-offset-2">
+            Настройки источника
+          </a>
+        </div>
+      )}
 
       {results.length > 0 && (
         <div className="mt-2 overflow-hidden rounded-xl border border-white/[0.08]">
@@ -407,32 +475,23 @@ function MyMatchesPanel() {
           </div>
           {results.map((result) => (
             <button
-              key={result.account_id}
+              key={result.accountId}
               type="button"
               onClick={() => {
-                setInput(String(result.account_id));
+                setInput(String(result.accountId));
                 setResults([]);
                 loadedRef.current = true;
-                void runSearch(result.account_id);
+                void runSearch(result.accountId);
               }}
               className="flex w-full items-center justify-between gap-2 border-b border-white/[0.04] px-3 py-2 text-left transition last:border-0 hover:bg-white/[0.04]"
             >
               <span className="min-w-0">
-                <span className="block truncate text-[11.5px] font-semibold text-white">
-                  {result.personaname || `Аккаунт ${result.account_id}`}
-                </span>
-                <span className="text-[9px] text-ink-500">ID {result.account_id}</span>
+                <span className="block truncate text-[11.5px] font-semibold text-white">{result.name}</span>
+                <span className="text-[9px] text-ink-500">ID {result.accountId}</span>
               </span>
               <ChevronRight size={13} className="text-ink-500" />
             </button>
           ))}
-        </div>
-      )}
-
-      {error && (
-        <div className="mt-3 rounded-xl border border-dire/20 bg-dire/[0.05] px-3 py-2.5 text-[11px] leading-relaxed text-[#ffb3ae]">
-          {error}
-          {error.includes('API-ключ') && <a href="#/settings" className="ml-1 underline">Добавить ключ</a>}
         </div>
       )}
 
@@ -443,13 +502,26 @@ function MyMatchesPanel() {
           </div>
           <div className="min-w-0 flex-1">
             <div className="truncate text-[13px] font-semibold text-white">
-              {profile.personaname || `Аккаунт ${profile.account_id}`}
+              {profile.name || `Аккаунт ${profile.accountId}`}
             </div>
             <div className="mt-0.5 text-[10px] text-ink-400">
-              {rankLabel(profile.rank_tier)} · ID {profile.account_id}
+              {profile.rankTier ? rankLabel(profile.rankTier) : 'рейтинг скрыт'} · ID {profile.accountId}
             </div>
           </div>
-          <span className="hidden text-[10px] text-ink-500 sm:block">последние {matches.length}</span>
+          <button
+            type="button"
+            onClick={() => {
+              updateSettings({
+                ...settings,
+                accountId: profile.accountId,
+                playerName: profile.name ?? '',
+              });
+              notify('Профиль сохранён — он будет загружаться автоматически.', 'success');
+            }}
+            className="btn-secondary !px-2.5 !py-1.5 text-[10px]"
+          >
+            <ShieldCheck size={12} /> Запомнить
+          </button>
         </div>
       )}
 
@@ -502,12 +574,13 @@ function MyMatchesPanel() {
         )
       )}
 
-      {!profile && !loading && !error && (
+      {!profile && !loading && !error && !results.length && (
         <div className="mt-3 flex items-start gap-2 rounded-xl border border-dashed border-white/[0.08] px-3 py-3 text-[10.5px] leading-relaxed text-ink-500">
           <CircleHelp size={13} className="mt-0.5 flex-shrink-0" />
           <span>
-            Свой account_id можно найти в ссылке OpenDota или в SteamID64 (из него вычитается база). Публичные матчи
-            подтягиваются без авторизации.
+            {settings.provider === 'steam'
+              ? 'Valve отдаёт последние матчи по SteamID64 или короткому имени профиля. Ключ бесплатный: steamcommunity.com/dev/apikey.'
+              : 'Свой account_id можно найти в ссылке OpenDota или в SteamID64. Публичные матчи подтягиваются без авторизации.'}
           </span>
         </div>
       )}
@@ -534,22 +607,21 @@ function ImportPanel() {
         match = normalizeMatch(raw);
       } catch (err) {
         if (err instanceof MatchDataError && err.code === 'no-api' && err.matchId) {
-          const apiRaw = await fetchMatch(err.matchId, settings.apiKey);
+          const apiRaw = await fetchRawMatch(err.matchId, settings);
           match = normalizeMatch([...raw, apiRaw]);
         } else {
           throw err;
         }
       }
-      cacheMatch(match);
+      cacheMatch(match, settings.provider);
       notify(`Матч #${match.id} загружен.`, 'success');
       navigate(matchPath(match.id, 'overview'));
     } catch (err) {
       const message =
         err instanceof MatchDataError
           ? err.message
-          : err instanceof ApiError
-            ? err.message
-            : 'Не удалось прочитать файл. Нужен JSON ответа OpenDota (/api/matches/:id) или файл парса.';
+          : toAppError(err).message ||
+            'Не удалось прочитать файл. Нужен JSON ответа OpenDota (/api/matches/:id) или файл парса.';
       setError(message);
     } finally {
       setLoading(false);
@@ -775,6 +847,19 @@ export default function HomePage() {
               </button>
             </form>
 
+            {settings.provider === 'steam' && !settings.steamKey.trim() && (
+              <div className="mt-3 flex max-w-xl items-start gap-2 rounded-xl border border-gold/20 bg-gold/[0.05] px-3 py-2 text-[10.5px] leading-relaxed text-gold/90">
+                <ShieldCheck size={13} className="mt-0.5 flex-shrink-0" />
+                <span>
+                  Для матчей по ID через Valve нужен бесплатный ключ Steam.{' '}
+                  <a href="#/settings" className="font-semibold underline underline-offset-2">
+                    Добавить ключ
+                  </a>{' '}
+                  — или открой демо-матч ниже.
+                </span>
+              </div>
+            )}
+
             <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[10px] text-ink-400">
               <button
                 type="button"
@@ -783,6 +868,9 @@ export default function HomePage() {
               >
                 <Sparkles size={11} /> Или открыть демо-матч
               </button>
+              <a href="#/settings" className="inline-flex items-center gap-1.5 hover:text-ink-200">
+                <Database size={11} /> Источник: {providerLabel(settings.provider)}
+              </a>
               {settings.accountId && (
                 <a href="#/progress" className="inline-flex items-center gap-1.5 hover:text-ink-200">
                   <UserRound size={11} /> Мой профиль подключён
@@ -821,7 +909,7 @@ export default function HomePage() {
       <Features />
 
       <div className="grid gap-4 lg:grid-cols-[1.1fr_.9fr]">
-        <MyMatchesPanel />
+        <MyMatchesPanel key={settings.provider} />
         <ImportPanel />
       </div>
 

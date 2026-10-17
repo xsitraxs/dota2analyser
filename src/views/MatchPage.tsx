@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, Loader2, RefreshCw, Sparkles } from 'lucide-react';
+import { ChevronLeft, Database, Loader2, RefreshCw, Sparkles, Upload } from 'lucide-react';
 import { useApp } from '../lib/app-context';
 import { analyzeMatch } from '../lib/analyze';
 import { findMySlot } from '../lib/identity';
-import { loadMatch, refreshMatch } from '../lib/matchStore';
+import { loadMatch, mergeParsedData, refreshMatch } from '../lib/matchStore';
 import { matchPath, type MatchTab } from '../lib/router';
-import { ApiError, requestParse } from '../lib/openDota';
+import { requestParse } from '../lib/openDota';
+import { providerLabel, providerProblem } from '../lib/dataSource';
+import { needsSettings, toAppError, type AppError } from '../lib/errors';
+import { readJsonFiles } from '../lib/normalize';
 import type { Match } from '../types';
 import { EmptyState } from '../components/ui';
 import { OverviewTab } from './match/OverviewTab';
@@ -26,28 +29,23 @@ export default function MatchPage({ route }: { route: { name: 'match'; id: numbe
   const { settings, navigate, identity, notify, recordHistory } = useApp();
   const [match, setMatch] = useState<Match | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<AppError | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [parseRequested, setParseRequested] = useState(false);
+  const [merging, setMerging] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
     setMatch(null);
-    loadMatch(route.id, settings.apiKey)
+    loadMatch(route.id, settings)
       .then((next) => {
         if (!cancelled) setMatch(next);
       })
       .catch((err) => {
         if (cancelled) return;
-        const message =
-          err instanceof ApiError
-            ? err.message
-            : err instanceof Error
-              ? err.message
-              : 'Не удалось загрузить матч. Попробуй ещё раз или загрузи JSON.';
-        setError(message);
+        setError(toAppError(err));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -55,7 +53,7 @@ export default function MatchPage({ route }: { route: { name: 'match'; id: numbe
     return () => {
       cancelled = true;
     };
-  }, [route.id, settings.apiKey, reloadKey]);
+  }, [route.id, settings, reloadKey]);
 
   const analysis = useMemo(() => (match ? analyzeMatch(match) : null), [match]);
 
@@ -119,12 +117,22 @@ export default function MatchPage({ route }: { route: { name: 'match'; id: numbe
       <EmptyState
         icon={<Sparkles size={22} />}
         title="Матч пока не открылся"
-        description={error ?? 'Не удалось получить данные матча.'}
+        description={
+          <span className="block">
+            <span className="block">{error?.message ?? 'Не удалось получить данные матча.'}</span>
+            {error?.hint && <span className="mt-2 block text-[11px] text-ink-500">{error.hint}</span>}
+          </span>
+        }
         action={
           <div className="flex flex-wrap justify-center gap-2">
             <button type="button" onClick={retry} className="btn-primary text-xs">
               <RefreshCw size={14} /> Попробовать снова
             </button>
+            {(error == null || needsSettings(error.code)) && (
+              <a href="#/settings" className="btn-secondary text-xs">
+                <Database size={14} /> Источник данных
+              </a>
+            )}
             <a href="#/" className="btn-secondary text-xs">
               <ChevronLeft size={14} /> На главную
             </a>
@@ -153,9 +161,16 @@ export default function MatchPage({ route }: { route: { name: 'match'; id: numbe
           <div>
             <div className="flex items-center gap-2">
               <span className="text-[9px] font-bold uppercase tracking-[0.16em] text-ink-500">Матч</span>
-              {match.demo && (
+              {match.demo ? (
                 <span className="rounded border border-lime/25 bg-lime/[0.08] px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-lime">
                   демо
+                </span>
+              ) : (
+                <span
+                  className="rounded border border-white/[0.1] bg-white/[0.04] px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-ink-300"
+                  title={providerProblem(settings)?.message ?? 'Источник данных можно сменить в настройках'}
+                >
+                  {providerLabel(settings.provider)}
                 </span>
               )}
             </div>
@@ -166,16 +181,20 @@ export default function MatchPage({ route }: { route: { name: 'match'; id: numbe
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {!match.parsed && (
+          {!match.parsed && settings.provider !== 'steam' && (
             <button
               type="button"
               onClick={async () => {
                 try {
-                  await requestParse(match.id, settings.apiKey);
+                  await requestParse(
+                    match.id,
+                    settings.apiKey,
+                    settings.provider === 'proxy' ? settings.proxyBase : undefined,
+                  );
                   setParseRequested(true);
                   notify('Запрос на разбор реплея отправлен. Обычно это занимает 2–10 минут.', 'success');
                 } catch (err) {
-                  notify(err instanceof ApiError ? err.message : 'Не удалось отправить запрос на разбор.', 'error');
+                  notify(toAppError(err).message, 'error');
                 }
               }}
               disabled={parseRequested}
@@ -184,15 +203,46 @@ export default function MatchPage({ route }: { route: { name: 'match'; id: numbe
               <Sparkles size={12} /> {parseRequested ? 'Парс запрошен' : 'Запросить парс'}
             </button>
           )}
+          {!match.parsed && (
+            <label
+              className={`btn-secondary !px-2.5 !py-1.5 text-[10px] ${merging ? 'pointer-events-none opacity-60' : 'cursor-pointer'}`}
+              title="Загрузи JSON парса (например, от друга с VPN или из другого источника) — таймлайны и карта появятся"
+            >
+              {merging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
+              Догрузить парс
+              <input
+                type="file"
+                multiple
+                accept=".json,application/json"
+                className="hidden"
+                onChange={async (event) => {
+                  const files = event.target.files ? Array.from(event.target.files) : [];
+                  if (!files.length) return;
+                  setMerging(true);
+                  try {
+                    const raw = await readJsonFiles(files);
+                    const merged = await mergeParsedData(match.id, raw, settings);
+                    setMatch(merged);
+                    notify('Парс добавлен: таймлайны, карта и драки обновлены.', 'success');
+                  } catch (err) {
+                    notify(toAppError(err).message, 'error');
+                  } finally {
+                    setMerging(false);
+                    event.target.value = '';
+                  }
+                }}
+              />
+            </label>
+          )}
           <button
             type="button"
             onClick={async () => {
               try {
-                const fresh = await refreshMatch(match.id, settings.apiKey);
+                const fresh = await refreshMatch(match.id, settings);
                 setMatch(fresh);
-                notify('Матч обновлён из OpenDota.', 'success');
+                notify('Матч обновлён.', 'success');
               } catch (err) {
-                notify(err instanceof ApiError ? err.message : 'Не удалось обновить матч.', 'error');
+                notify(toAppError(err).message, 'error');
               }
             }}
             className="btn-ghost !px-2.5 !py-1.5 text-[10px]"
@@ -254,7 +304,7 @@ export default function MatchPage({ route }: { route: { name: 'match'; id: numbe
       )}
 
       <div className="flex items-center justify-center gap-2 pt-2 text-[9px] text-ink-600">
-        <span>Источник: OpenDota</span>
+        <span>Источник: {match.demo ? 'OpenDota (демо)' : providerLabel(settings.provider)}</span>
         <span>·</span>
         <span>Данные матча #{match.id}</span>
         {!match.parsed && (

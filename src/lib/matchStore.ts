@@ -2,7 +2,8 @@ import demo1 from '../data/demo/7490235544.json';
 import demo2 from '../data/demo/1781962623.json';
 import { normalizeMatch } from './normalize';
 import { analyzeMatch } from './analyze';
-import { fetchMatch } from './openDota';
+import { fetchRawMatch } from './dataSource';
+import type { Settings } from '../types';
 import type { DemoMeta, Match } from '../types';
 import data from '../data/constants.json';
 import type { ConstantsFile } from '../types';
@@ -29,8 +30,13 @@ export interface DemoCard {
   gameMode: number;
 }
 
-const cache = new Map<number, Match>();
+const cache = new Map<string, Match>();
+const rawCache = new Map<string, unknown>();
 const sessionPrefix = 'd2a.match.';
+
+function cacheKey(id: number, provider: string): string {
+  return `${provider}:${id}`;
+}
 
 function demoPayload(id: number): unknown | null {
   return DEMO_MODULES.find((payload) => {
@@ -43,29 +49,36 @@ export const DEMO_META_LIST: DemoMeta[] = DEMO_MODULES.map(
   (payload) => (payload as { __demo: DemoMeta }).__demo,
 );
 
-export function getCachedMatch(id: number): Match | null {
-  return cache.get(id) ?? null;
+export function getCachedMatch(id: number, provider: string): Match | null {
+  return cache.get(cacheKey(id, provider)) ?? null;
 }
 
-export function cacheMatch(match: Match): void {
-  cache.set(match.id, match);
+export function cacheMatch(match: Match, provider: string): void {
+  const key = cacheKey(match.id, provider);
+  cache.set(key, match);
   try {
     const serialized = JSON.stringify(match);
-    if (serialized.length < 3_500_000) sessionStorage.setItem(`${sessionPrefix}${match.id}`, serialized);
+    if (serialized.length < 3_500_000) sessionStorage.setItem(`${sessionPrefix}${key}`, serialized);
   } catch {
     /* ignore quota errors */
   }
 }
 
-export async function loadMatch(id: number, apiKey: string): Promise<Match> {
-  const cached = cache.get(id);
+export function getRawMatch(id: number, provider: string): unknown | null {
+  return rawCache.get(cacheKey(id, provider)) ?? null;
+}
+
+export async function loadMatch(id: number, settings: Settings): Promise<Match> {
+  const provider = settings.provider;
+  const key = cacheKey(id, provider);
+  const cached = cache.get(key);
   if (cached) return cached;
 
   try {
-    const stored = sessionStorage.getItem(`${sessionPrefix}${id}`);
+    const stored = sessionStorage.getItem(`${sessionPrefix}${key}`);
     if (stored) {
       const match = JSON.parse(stored) as Match;
-      cache.set(id, match);
+      cache.set(key, match);
       return match;
     }
   } catch {
@@ -75,14 +88,33 @@ export async function loadMatch(id: number, apiKey: string): Promise<Match> {
   const demo = demoPayload(id);
   if (demo) {
     const match = normalizeMatch([demo]);
-    cacheMatch(match);
+    rawCache.set(key, demo);
+    cacheMatch(match, provider);
     return match;
   }
 
-  const raw = await fetchMatch(id, apiKey);
+  const raw = await fetchRawMatch(id, settings);
+  rawCache.set(key, raw);
   const match = normalizeMatch([raw]);
-  cacheMatch(match);
+  cacheMatch(match, provider);
   return match;
+}
+
+/** Догружает парс реплея к уже загруженному матчу (например, к данным Valve). */
+export async function mergeParsedData(
+  matchId: number,
+  extraRaw: unknown[],
+  settings: Settings,
+): Promise<Match> {
+  const key = cacheKey(matchId, settings.provider);
+  let raw: unknown = rawCache.get(key) ?? null;
+  if (!raw) {
+    raw = await fetchRawMatch(matchId, settings);
+    rawCache.set(key, raw);
+  }
+  const combined = normalizeMatch([raw, ...extraRaw]);
+  cacheMatch(combined, settings.provider);
+  return combined;
 }
 
 export function demoMatchId(): number {
@@ -125,9 +157,12 @@ export function getDemoCards(): DemoCard[] {
   });
 }
 
-export async function refreshMatch(id: number, apiKey: string): Promise<Match> {
-  const raw = await fetchMatch(id, apiKey);
-  const match = normalizeMatch([raw]);
-  cacheMatch(match);
+export async function refreshMatch(id: number, settings: Settings): Promise<Match> {
+  const key = cacheKey(id, settings.provider);
+  const existing = rawCache.get(key) ?? null;
+  const raw = await fetchRawMatch(id, settings);
+  rawCache.set(key, raw);
+  const match = normalizeMatch(existing ? [raw, existing] : [raw]);
+  cacheMatch(match, settings.provider);
   return match;
 }

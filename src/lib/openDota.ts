@@ -1,4 +1,10 @@
-const API_BASE = 'https://api.opendota.com/api';
+export const OPEN_DOTA_BASE = 'https://api.opendota.com/api';
+
+function normalizeBase(base?: string): string {
+  const value = (base ?? '').trim();
+  if (!value) return OPEN_DOTA_BASE;
+  return value.replace(/\/+$/, '');
+}
 
 export class ApiError extends Error {
   status: number;
@@ -16,10 +22,11 @@ interface FetchOptions {
   signal?: AbortSignal;
   method?: 'GET' | 'POST';
   body?: unknown;
+  baseUrl?: string;
 }
 
 async function request<T>(path: string, options: FetchOptions = {}): Promise<T> {
-  const url = new URL(`${API_BASE}${path}`);
+  const url = new URL(`${normalizeBase(options.baseUrl)}${path}`);
   if (options.apiKey) url.searchParams.set('api_key', options.apiKey);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
@@ -89,16 +96,31 @@ export interface RecentMatch {
   party_size?: number | null;
 }
 
-export async function fetchMatch(matchId: number | string, apiKey?: string, signal?: AbortSignal): Promise<unknown> {
-  return request(`/matches/${matchId}`, { apiKey, signal });
+export async function fetchMatch(
+  matchId: number | string,
+  apiKey?: string,
+  signal?: AbortSignal,
+  baseUrl?: string,
+): Promise<unknown> {
+  return request(`/matches/${matchId}`, { apiKey, signal, baseUrl });
 }
 
-export async function searchPlayers(query: string, apiKey?: string, signal?: AbortSignal): Promise<PlayerSearchResult[]> {
-  return request(`/search?q=${encodeURIComponent(query.trim())}`, { apiKey, signal });
+export async function searchPlayers(
+  query: string,
+  apiKey?: string,
+  signal?: AbortSignal,
+  baseUrl?: string,
+): Promise<PlayerSearchResult[]> {
+  return request(`/search?q=${encodeURIComponent(query.trim())}`, { apiKey, signal, baseUrl });
 }
 
-export async function fetchPlayer(accountId: number, apiKey?: string, signal?: AbortSignal): Promise<PlayerProfile> {
-  return request(`/players/${accountId}`, { apiKey, signal });
+export async function fetchPlayer(
+  accountId: number,
+  apiKey?: string,
+  signal?: AbortSignal,
+  baseUrl?: string,
+): Promise<PlayerProfile> {
+  return request(`/players/${accountId}`, { apiKey, signal, baseUrl });
 }
 
 export async function fetchRecentMatches(
@@ -106,12 +128,17 @@ export async function fetchRecentMatches(
   apiKey?: string,
   signal?: AbortSignal,
   limit = 20,
+  baseUrl?: string,
 ): Promise<RecentMatch[]> {
-  return request(`/players/${accountId}/matches?limit=${limit}`, { apiKey, signal });
+  return request(`/players/${accountId}/matches?limit=${limit}`, { apiKey, signal, baseUrl });
 }
 
-export async function requestParse(matchId: number, apiKey?: string): Promise<{ job?: { job_id?: number } }> {
-  return request(`/request/${matchId}`, { apiKey, method: 'POST', body: {} });
+export async function requestParse(
+  matchId: number,
+  apiKey?: string,
+  baseUrl?: string,
+): Promise<{ job?: { job_id?: number } }> {
+  return request(`/request/${matchId}`, { apiKey, method: 'POST', body: {}, baseUrl });
 }
 
 export function parseAccountInput(value: string): { accountId: number | null; error?: string } {
