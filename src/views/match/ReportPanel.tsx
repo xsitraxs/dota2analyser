@@ -456,6 +456,23 @@ export function ReportPanel({
                 Смотреть прогресс <ArrowRight size={12} />
               </a>
             </div>
+            <details className="panel p-4">
+              <summary className="flex items-center justify-between text-[11px] font-semibold text-white">
+                Как считаются оценки
+                <span className="text-[10px] text-ink-500">+</span>
+              </summary>
+              <div className="mt-2 space-y-2 text-[10px] leading-relaxed text-ink-400">
+                <p>
+                  Шесть зон сравниваются с ориентирами для конкретной позиции. Веса зон зависят от роли: у керри
+                  важнее фарм и урон, у поддержки — видение и участие в драках.
+                </p>
+                <p>
+                  Итог — взвешенная сумма доступных зон. Если матч не распарсен, зоны без данных (видение, часть драк)
+                  не участвуют, а не обнуляют оценку.
+                </p>
+                <p>Оценка — повод посмотреть повтор, а не приговор. Сравнивай себя с собой прошлым.</p>
+              </div>
+            </details>
           </div>
         </div>
       </div>

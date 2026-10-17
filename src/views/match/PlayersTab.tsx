@@ -94,7 +94,7 @@ export function PlayersTab({
             <div className="kicker">Сравнение игроков</div>
             <h2 className="display-title mt-1 text-xl text-white">Все участники и оценки</h2>
             <p className="mt-1 text-[11.5px] text-ink-400">
-              Оценки строятся с поправкой на позицию игрока. Нажми на строку — откроется полный отчёт.
+              Оценки строятся с поправкой на позицию игрока. Нажми на строку — откроется полный отчёт, там же можно отметить «Это я».
             </p>
           </div>
           <div className="relative">
