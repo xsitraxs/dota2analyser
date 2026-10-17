@@ -292,11 +292,12 @@ export function ReportPanel({
             </button>
             <button
               type="button"
-              onClick={() => markAsMe(match.id, current.player.slot, current.player.accountId)}
+              onClick={() => markAsMe(match.id, current.player.slot, match.demo ? null : current.player.accountId)}
               className="btn-secondary w-full"
             >
               <UserRound size={14} />{' '}
-              {identity.selectedSlots[String(match.id)] === current.player.slot || identity.accountId === current.player.accountId
+              {identity.selectedSlots[String(match.id)] === current.player.slot ||
+                (identity.accountId != null && identity.accountId === current.player.accountId)
                 ? 'Это ты'
                 : 'Это я'}
             </button>

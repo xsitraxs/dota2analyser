@@ -243,7 +243,7 @@ export function MapTab({ analysis }: { analysis: MatchAnalysis; match?: unknown 
             )}
             {!hasWards && layer === 'wards' && (
               <div className="mt-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2 text-[10px] leading-relaxed text-ink-400">
-                Игрок не ставил вардов в этом матче.
+                {selected.hasTimeline ? 'Игрок не ставил вардов в этом матче.' : 'Нет данных о вардах: матч не распарсен.'}
               </div>
             )}
           </div>

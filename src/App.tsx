@@ -8,6 +8,7 @@ import {
   loadHistory,
   loadIdentity,
   loadLessonProgress,
+  clearAll,
   loadSettings,
   rememberPlayerSlot,
   removeHistory,
@@ -76,6 +77,15 @@ export default function App() {
     setHistory([]);
   }, []);
 
+  const resetEverything = useCallback(() => {
+    clearAll();
+    const defaults: Settings = { apiKey: '', accountId: null, playerName: '', reduceMotion: false };
+    setSettings(defaults);
+    setHistory([]);
+    setLessonProgress({});
+    setIdentity({ accountId: null, selectedSlots: {} });
+  }, []);
+
   const toggleLesson = useCallback((lessonId: string, done: boolean) => {
     const next = setLessonDone(lessonId, done);
     setLessonProgress({ ...next });
@@ -93,6 +103,7 @@ export default function App() {
       recordHistory,
       removeHistoryEntry,
       clearHistoryState,
+      resetEverything,
       lessonProgress,
       toggleLesson,
       notify,
@@ -109,6 +120,7 @@ export default function App() {
       recordHistory,
       removeHistoryEntry,
       clearHistoryState,
+      resetEverything,
       lessonProgress,
       toggleLesson,
       notify,

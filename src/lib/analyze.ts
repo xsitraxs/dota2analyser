@@ -358,6 +358,7 @@ function analyzePlayer(match: Match, player: Player, index: number, role: number
   };
 
   const isCore = role <= 3;
+  const parsedData = player.isParsed;
   const farmComps = isCore
     ? [
         { score: ratioScore(metrics.lh10, GOALS.lh10[role as 1 | 2 | 3]), weight: 0.32 },
@@ -365,11 +366,13 @@ function analyzePlayer(match: Match, player: Player, index: number, role: number
         { score: ratioScore(metrics.lhPerMin, GOALS.lhPerMin[role as 1 | 2 | 3]), weight: 0.2 },
         { score: ratioScore(metrics.gpm, GOALS.gpm[role as 1 | 2 | 3]), weight: 0.3 },
       ]
-    : [
-        { score: ratioScore(metrics.gpm, GOALS.gpm[role as 4 | 5]), weight: 0.5 },
-        { score: ratioScore(metrics.campsStacked, GOALS.stacks[role as 4 | 5]), weight: 0.25 },
-        { score: ratioScore(metrics.runePickups, GOALS.runes[role as 4 | 5]), weight: 0.25 },
-      ];
+    : parsedData
+      ? [
+          { score: ratioScore(metrics.gpm, GOALS.gpm[role as 4 | 5]), weight: 0.5 },
+          { score: ratioScore(metrics.campsStacked, GOALS.stacks[role as 4 | 5]), weight: 0.25 },
+          { score: ratioScore(metrics.runePickups, GOALS.runes[role as 4 | 5]), weight: 0.25 },
+        ]
+      : [{ score: ratioScore(metrics.gpm, GOALS.gpm[role as 4 | 5]), weight: 1 }];
 
   const damageComps = [
     { score: ratioScore(metrics.damagePerMin, GOALS.damagePerMin[role as 1 | 2 | 3 | 4 | 5]), weight: 0.7 },
@@ -407,7 +410,7 @@ function analyzePlayer(match: Match, player: Player, index: number, role: number
     farm: weighted(farmComps),
     damage: weighted(damageComps),
     survival: survivalScore,
-    vision: weighted(visionComps),
+    vision: parsedData ? weighted(visionComps) : null,
     fights: weighted(fightsComps),
     objectives: weighted(objectivesComps),
   };

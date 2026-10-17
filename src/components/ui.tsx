@@ -309,16 +309,19 @@ export function Toggle({
   description?: string;
 }) {
   return (
-    <label className="flex cursor-pointer items-start justify-between gap-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-3.5 transition hover:border-white/[0.12]">
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => onChange(!checked)}
+      className="flex w-full cursor-pointer items-start justify-between gap-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-3.5 text-left transition hover:border-white/[0.12]"
+    >
       <span>
         <span className="block text-sm font-semibold text-white">{label}</span>
         {description && <span className="mt-0.5 block text-[11px] leading-relaxed text-ink-400">{description}</span>}
       </span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onChange(!checked)}
+      <span
         className="relative mt-0.5 h-5 w-9 flex-shrink-0 rounded-full transition"
         style={{ background: checked ? '#C9F26B' : 'rgba(255,255,255,0.14)' }}
       >
@@ -326,8 +329,8 @@ export function Toggle({
           className="absolute top-0.5 h-4 w-4 rounded-full bg-ink-950 transition-all"
           style={{ left: checked ? 18 : 2 }}
         />
-      </button>
-    </label>
+      </span>
+    </button>
   );
 }
 

@@ -21,6 +21,7 @@ export interface AppContextValue {
   recordHistory: (entry: HistoryEntry) => void;
   removeHistoryEntry: (matchId: number, slot: number) => void;
   clearHistoryState: () => void;
+  resetEverything: () => void;
   lessonProgress: LessonProgress;
   toggleLesson: (lessonId: string, done: boolean) => void;
   notify: (message: string, tone?: ToastItem['tone']) => void;

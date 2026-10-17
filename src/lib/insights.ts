@@ -300,7 +300,8 @@ export function buildCoachReport(match: Match, analysis: MatchAnalysis, slot: nu
   }
 
   // ---------- Видение ----------
-  if (!isCore && m.wardsPer10 < visionGoal * 0.7) {
+  const hasVisionData = playerAnalysis.hasTimeline;
+  if (hasVisionData && !isCore && m.wardsPer10 < visionGoal * 0.7) {
     add({
       id: 'vision-low',
       severity: m.wardsPer10 < visionGoal * 0.4 ? 'critical' : 'warning',
@@ -313,7 +314,7 @@ export function buildCoachReport(match: Match, analysis: MatchAnalysis, slot: nu
       value: m.wardsPer10.toFixed(2),
       goal: visionGoal.toFixed(2),
     });
-  } else if (!isCore && m.wardsPer10 >= visionGoal) {
+  } else if (hasVisionData && !isCore && m.wardsPer10 >= visionGoal) {
     add({
       id: 'vision-good',
       severity: 'good',
@@ -326,7 +327,7 @@ export function buildCoachReport(match: Match, analysis: MatchAnalysis, slot: nu
     });
   }
 
-  if (!isCore && m.senPlaced === 0 && m.obsPlaced >= 3) {
+  if (hasVisionData && !isCore && m.senPlaced === 0 && m.obsPlaced >= 3) {
     add({
       id: 'vision-sentry',
       severity: 'warning',
@@ -337,7 +338,7 @@ export function buildCoachReport(match: Match, analysis: MatchAnalysis, slot: nu
       fix: 'Покупай сентари под каждый обс в важной зоне и перед Рошаном/пушами. Одна снятая сентари окупает себя.',
       lessonIds: ['vision'],
     });
-  } else if (!isCore && m.senPlaced > 0 && m.senPlaced < senGoal * durationMin / 10) {
+  } else if (hasVisionData && !isCore && m.senPlaced > 0 && m.senPlaced < senGoal * durationMin / 10) {
     add({
       id: 'vision-sentry-low',
       severity: 'info',
@@ -350,7 +351,7 @@ export function buildCoachReport(match: Match, analysis: MatchAnalysis, slot: nu
     });
   }
 
-  if (isCore && m.obsPlaced === 0 && durationMin > 25) {
+  if (hasVisionData && isCore && m.obsPlaced === 0 && durationMin > 25) {
     add({
       id: 'vision-core-zero',
       severity: 'info',
@@ -391,7 +392,7 @@ export function buildCoachReport(match: Match, analysis: MatchAnalysis, slot: nu
   }
 
   const tpUses = player.itemUses.tpscroll ?? player.purchaseLog.filter((entry) => entry.key === 'tpscroll').length;
-  if (durationMin > 20 && tpUses < 3) {
+  if (playerAnalysis.hasTimeline && durationMin > 20 && tpUses < 3) {
     add({
       id: 'items-tp',
       severity: 'warning',
@@ -436,7 +437,7 @@ export function buildCoachReport(match: Match, analysis: MatchAnalysis, slot: nu
   const teamRoshans = match.objectives.filter(
     (objective) => objective.kind === 'roshan' && objective.team === (player.isRadiant ? 'radiant' : 'dire'),
   ).length;
-  if (durationMin > 28 && teamRoshans === 0) {
+  if (match.parsed && durationMin > 28 && teamRoshans === 0) {
     add({
       id: 'objectives-roshan',
       severity: 'info',

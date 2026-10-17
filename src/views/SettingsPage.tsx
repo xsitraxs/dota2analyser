@@ -3,11 +3,10 @@ import { Check, KeyRound, Link2, RefreshCw, ShieldCheck, Sparkles, Trash2, UserR
 import { useApp } from '../lib/app-context';
 import { fetchMatch, fetchPlayer, parseAccountInput, rankLabel, type PlayerProfile } from '../lib/openDota';
 import { normalizeMatch } from '../lib/normalize';
-import { clearAll } from '../lib/storage';
 import { Toggle } from '../components/ui';
 
 export default function SettingsPage() {
-  const { settings, updateSettings, notify, history, lessonProgress, clearHistoryState } = useApp();
+  const { settings, updateSettings, notify, history, lessonProgress, clearHistoryState, resetEverything } = useApp();
   const [accountInput, setAccountInput] = useState(settings.accountId ? String(settings.accountId) : '');
   const [testMatch, setTestMatch] = useState('');
   const [testing, setTesting] = useState(false);
@@ -237,9 +236,7 @@ export default function SettingsPage() {
           <button
             type="button"
             onClick={() => {
-              clearAll();
-              updateSettings({ apiKey: '', accountId: null, playerName: '', reduceMotion: false });
-              clearHistoryState();
+              resetEverything();
               notify('Все локальные данные удалены.', 'info');
             }}
             className="btn-danger text-[11px]"
