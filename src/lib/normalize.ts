@@ -554,6 +554,9 @@ export function normalizeMatch(inputs: unknown[]): Match {
   if (!parsedFlag) {
     warnings.push('Матч не распарсен: таймлайны, варды и драки недоступны. Загрузи JSON парса для полного разбора.');
   }
+  if (!players.some((player) => player.laneRole != null || player.lanePos)) {
+    warnings.push('Нет разбивки по линиям: позиции определены по объёму фарма, линия не отображается.');
+  }
   if (!teamfights.length) {
     warnings.push('Нет данных о командных драках — часть выводов скрыта.');
   }

@@ -79,7 +79,7 @@ export default function App() {
 
   const resetEverything = useCallback(() => {
     clearAll();
-    const defaults: Settings = { apiKey: '', accountId: null, playerName: '', reduceMotion: false };
+    const defaults: Settings = loadSettings();
     setSettings(defaults);
     setHistory([]);
     setLessonProgress({});

@@ -20,13 +20,20 @@ function write(key: string, value: unknown): void {
   }
 }
 
+export const DEFAULT_SETTINGS: Settings = {
+  apiKey: '',
+  accountId: null,
+  playerName: '',
+  reduceMotion: false,
+  provider: 'steam',
+  steamKey: '',
+  steamProxy: '',
+  proxyBase: '',
+};
+
 export function loadSettings(): Settings {
-  return read<Settings>('settings', {
-    apiKey: '',
-    accountId: null,
-    playerName: '',
-    reduceMotion: false,
-  });
+  const stored = read<Partial<Settings>>('settings', {});
+  return { ...DEFAULT_SETTINGS, ...stored };
 }
 
 export function saveSettings(settings: Settings): void {

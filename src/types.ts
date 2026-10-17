@@ -361,11 +361,22 @@ export interface HistoryEntry {
   demo: boolean;
 }
 
+export type DataProvider = 'steam' | 'opendota' | 'proxy';
+
 export interface Settings {
+  /** Ключ OpenDota (опционально, повышает лимиты). */
   apiKey: string;
   accountId: number | null;
   playerName: string;
   reduceMotion: boolean;
+  /** Откуда брать матчи: официальный Valve API, OpenDota или свой прокси. */
+  provider: DataProvider;
+  /** Ключ Steam Web API (бесплатный, выдаётся на steamcommunity.com/dev/apikey). */
+  steamKey: string;
+  /** Необязательный прокси для Steam API (если браузер блокирует CORS). */
+  steamProxy: string;
+  /** Базовый URL OpenDota-совместимого API для режима «прокси». */
+  proxyBase: string;
 }
 
 export interface PlanTaskState {
