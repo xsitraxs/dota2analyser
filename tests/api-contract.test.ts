@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   OPEN_DOTA_BASE,
-  ApiError,
   fetchPlayer,
   fetchRecentMatches,
   toPlayerProfile,

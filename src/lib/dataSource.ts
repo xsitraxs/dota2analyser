@@ -240,7 +240,11 @@ export async function fetchRecentMatches(
   }
 }
 
-export async function fetchProfile(accountId: number, settings: Settings): Promise<ProfileView> {
+export async function fetchProfile(
+  accountId: number,
+  settings: Settings,
+  signal?: AbortSignal,
+): Promise<ProfileView> {
   const problem = providerProblem(settings);
   if (problem) throw problem;
 
@@ -249,6 +253,7 @@ export async function fetchProfile(accountId: number, settings: Settings): Promi
       const summaries = await steamPlayerSummaries([accountId], {
         key: settings.steamKey,
         base: settings.steamProxy,
+        signal,
       });
       const summary = summaries[accountId];
       return {
@@ -270,7 +275,7 @@ export async function fetchProfile(accountId: number, settings: Settings): Promi
     const envelope: PlayerProfileEnvelope = await openDotaPlayer(
       accountId,
       settings.apiKey,
-      undefined,
+      signal,
       proxyBase(settings),
     );
     // Имя и аватар лежат во вложенном profile, rank_tier — в корне ответа.

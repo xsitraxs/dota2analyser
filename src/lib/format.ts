@@ -1,20 +1,29 @@
+/**
+ * Возвращает время в формате м:сс.
+ *
+ * Отрицательные значения не маскируются под 0:00: если в данных всё же
+ * встретится отрицательное время (например, событие до старта), это видно.
+ */
 export function fmtTime(seconds: number | null | undefined, withHours = false): string {
-  if (seconds == null || Number.isNaN(seconds)) return '—';
-  const s = Math.max(0, Math.round(seconds));
+  if (seconds == null || !Number.isFinite(seconds)) return '—';
+  const sign = seconds < 0 ? '−' : '';
+  const s = Math.round(Math.abs(seconds));
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
   if (h > 0 || withHours) {
-    return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+    return `${sign}${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
   }
-  return `${m}:${String(sec).padStart(2, '0')}`;
+  return `${sign}${m}:${String(sec).padStart(2, '0')}`;
 }
 
 export function fmtClock(seconds: number): string {
-  const s = Math.max(0, Math.round(seconds));
+  if (!Number.isFinite(seconds)) return '—';
+  const sign = seconds < 0 ? '−' : '';
+  const s = Math.round(Math.abs(seconds));
   const m = Math.floor(s / 60);
   const sec = s % 60;
-  return `${m}:${String(sec).padStart(2, '0')}`;
+  return `${sign}${m}:${String(sec).padStart(2, '0')}`;
 }
 
 export function fmtDate(unixSeconds: number): string {

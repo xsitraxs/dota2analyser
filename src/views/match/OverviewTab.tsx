@@ -145,6 +145,8 @@ function TeamCompare({ match, analysis }: { match: Match; analysis: MatchAnalysi
           color="#C9F26B"
           symmetric
           zeroBaseline
+          label="Преимущество Radiant по золоту по минутам"
+          xLabel="минута"
           valueFormat={(value) => fmtCompact(value, 1)}
           markers={
             analysis.turningPoint

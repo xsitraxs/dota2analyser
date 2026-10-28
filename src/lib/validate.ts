@@ -172,6 +172,28 @@ export function checkApiBaseUrl(value: string): UrlCheck {
   return { ok: true, value: trimmed };
 }
 
+/**
+ * Похож ли адрес прокси на URL с секретом.
+ *
+ * Пользователь часто вставляет готовую ссылку вида
+ * `https://corsproxy.io/?key=abc...`. Всё, что стоит после `?`, уходит
+ * владельцу посредника — о таком стоит предупредить отдельно.
+ */
+export function looksLikeSecretUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (!isValidHttpUrl(trimmed)) return false;
+  try {
+    const url = new URL(trimmed);
+    const names = [...url.searchParams.keys()].map((name) => name.toLowerCase());
+    const suspicious = ['key', 'api_key', 'apikey', 'api-key', 'token', 'secret', 'auth', 'access_token', 'password'];
+    if (names.some((name) => suspicious.includes(name))) return true;
+    return /[?&](key|token|secret)=/i.test(url.search);
+  } catch {
+    return false;
+  }
+}
+
 /** Проверяет размер файла до чтения, чтобы не блокировать интерфейс. */
 export function checkFileSize(file: { name?: string; size?: number }, totalBytes: number): void {
   const size = typeof file.size === 'number' && Number.isFinite(file.size) ? file.size : 0;

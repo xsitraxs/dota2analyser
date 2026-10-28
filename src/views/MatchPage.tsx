@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, Database, Loader2, RefreshCw, Sparkles, Upload } from 'lucide-react';
 import { useApp } from '../lib/app-context';
 import { analyzeMatch } from '../lib/analyze';
@@ -33,6 +33,27 @@ export default function MatchPage({ route }: { route: { name: 'match'; id: numbe
   const [reloadKey, setReloadKey] = useState(0);
   const [parseRequested, setParseRequested] = useState(false);
   const [merging, setMerging] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Защита от гонок: обрабатываем только результат последней операции
+  // и только если пользователь всё ещё на странице этого матча.
+  const operationId = useRef(0);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  const beginOperation = useCallback(() => {
+    operationId.current += 1;
+    return operationId.current;
+  }, []);
+  const isStale = useCallback((id: number, matchId: number) => {
+    if (!mountedRef.current) return true;
+    if (id !== operationId.current) return true;
+    return matchId !== route.id;
+  }, [route.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -185,12 +206,15 @@ export default function MatchPage({ route }: { route: { name: 'match'; id: numbe
             <button
               type="button"
               onClick={async () => {
+                const matchId = match.id;
+                const id = beginOperation();
                 try {
                   await requestParse(
-                    match.id,
+                    matchId,
                     settings.apiKey,
                     settings.provider === 'proxy' ? settings.proxyBase : undefined,
                   );
+                  if (isStale(id, matchId)) return;
                   setParseRequested(true);
                   notify('Запрос на разбор реплея отправлен. Обычно это занимает 2–10 минут.', 'success');
                 } catch (err) {
@@ -205,7 +229,9 @@ export default function MatchPage({ route }: { route: { name: 'match'; id: numbe
           )}
           {!match.parsed && (
             <label
-              className={`btn-secondary !px-2.5 !py-1.5 text-[10px] ${merging ? 'pointer-events-none opacity-60' : 'cursor-pointer'}`}
+              className={`btn-secondary !px-2.5 !py-1.5 text-[10px] ${
+                merging || refreshing ? 'pointer-events-none opacity-60' : 'cursor-pointer'
+              }`}
               title="Загрузи JSON парса (например, от друга с VPN или из другого источника) — таймлайны и карта появятся"
             >
               {merging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
@@ -215,19 +241,25 @@ export default function MatchPage({ route }: { route: { name: 'match'; id: numbe
                 multiple
                 accept=".json,application/json"
                 className="hidden"
+                disabled={merging || refreshing}
                 onChange={async (event) => {
                   const files = event.target.files ? Array.from(event.target.files) : [];
                   if (!files.length) return;
+                  const matchId = match.id;
+                  const id = beginOperation();
                   setMerging(true);
                   try {
                     const raw = await readJsonFiles(files);
-                    const merged = await mergeParsedData(match.id, raw, settings);
+                    const merged = await mergeParsedData(matchId, raw, settings);
+                    if (isStale(id, matchId)) return;
                     setMatch(merged);
                     notify('Парс добавлен: таймлайны, карта и драки обновлены.', 'success');
                   } catch (err) {
+                    if (isStale(id, matchId)) return;
+                    // Ошибки данных показываем полностью: пользователю важно понять причину.
                     notify(toAppError(err).message, 'error');
                   } finally {
-                    setMerging(false);
+                    if (!isStale(id, matchId)) setMerging(false);
                     event.target.value = '';
                   }
                 }}
@@ -237,17 +269,27 @@ export default function MatchPage({ route }: { route: { name: 'match'; id: numbe
           <button
             type="button"
             onClick={async () => {
+              if (refreshing || merging) return;
+              const matchId = match.id;
+              const id = beginOperation();
+              setRefreshing(true);
               try {
-                const fresh = await refreshMatch(match.id, settings);
+                const fresh = await refreshMatch(matchId, settings);
+                if (isStale(id, matchId)) return;
                 setMatch(fresh);
                 notify('Матч обновлён.', 'success');
               } catch (err) {
+                if (isStale(id, matchId)) return;
                 notify(toAppError(err).message, 'error');
+              } finally {
+                if (!isStale(id, matchId)) setRefreshing(false);
               }
             }}
+            disabled={refreshing || merging}
             className="btn-ghost !px-2.5 !py-1.5 text-[10px]"
           >
-            <RefreshCw size={12} /> Обновить
+            <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />{' '}
+            {refreshing ? 'Обновляю…' : 'Обновить'}
           </button>
           {mySlot == null ? (
             <button

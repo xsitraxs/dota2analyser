@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Activity, CircleDollarSign, Clock, Flame, Skull, Sparkles, TrendingDown, TrendingUp } from 'lucide-react';
-import { DIMENSION_META } from '../../lib/constants';
-import { fmtClock, fmtCompact, fmtNum, fmtSigned, fmtTime } from '../../lib/format';
+import { fmtCompact, fmtNum, fmtSigned, fmtTime } from '../../lib/format';
 import type { Match, MatchAnalysis, PlayerAnalysis, Side } from '../../types';
 import { LineChart } from '../../components/charts';
 import { HeroAvatar, SIDE_COLOR, SIDE_LABEL } from '../../components/ui';
@@ -89,6 +88,8 @@ function PlayerTimeline({ analysis }: { analysis: PlayerAnalysis }) {
         valueFormat={(value) => (metric === 'lh' ? fmtNum(value) : fmtCompact(value))}
         xFormat={(value) => `${Math.round(value)}м`}
         emptyText="Нет таймлайна"
+        label={`Динамика игрока: ${metric === 'gold' ? 'золото' : metric === 'lh' ? 'добивания' : 'опыт'}`}
+        xLabel="минута"
       />
     </div>
   );
@@ -155,7 +156,7 @@ function TimelineTable({ analysis }: { analysis: PlayerAnalysis }) {
   );
 }
 
-function FightsSection({ match, analysis }: { match: Match; analysis: MatchAnalysis }) {
+function FightsSection({ analysis }: { analysis: MatchAnalysis }) {
   const [expanded, setExpanded] = useState<number | null>(null);
   if (!analysis.fights.length) {
     return (
@@ -300,6 +301,8 @@ export function TimelineTab({ match, analysis }: { match: Match; analysis: Match
           color="#C9F26B"
           symmetric
           zeroBaseline
+          label={`Преимущество ${metric === 'xp' ? 'по опыту' : 'по золоту'} по минутам`}
+          xLabel="минута"
           valueFormat={(value) => fmtCompact(value, 1)}
           markers={analysis.fights.map((fight) => ({
             x: fight.start / 60,
@@ -378,7 +381,7 @@ export function TimelineTab({ match, analysis }: { match: Match; analysis: Match
             ))}
           </div>
         </div>
-        <FightsSection match={match} analysis={analysis} />
+        <FightsSection analysis={analysis} />
       </div>
     </div>
   );

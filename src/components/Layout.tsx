@@ -17,7 +17,7 @@ import { useApp } from '../lib/app-context';
 import { HERO_BY_ID } from '../lib/constants';
 import { fmtDate } from '../lib/format';
 import { matchPath } from '../lib/router';
-import { demoMatchId } from '../lib/matchStore';
+import { demoMatchId } from '../lib/demoData';
 import { SIDE_COLOR } from './ui';
 
 function Logo({ compact = false }: { compact?: boolean }) {

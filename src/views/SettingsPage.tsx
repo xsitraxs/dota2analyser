@@ -21,6 +21,7 @@ import { fetchProfile, fetchRawMatch, PROVIDERS, providerProblem, type ProfileVi
 import { toAppError } from '../lib/errors';
 import { normalizeMatch } from '../lib/normalize';
 import { Toggle } from '../components/ui';
+import { checkApiBaseUrl, looksLikeSecretUrl } from '../lib/validate';
 import type { DataProvider } from '../types';
 
 export default function SettingsPage() {
@@ -219,6 +220,17 @@ export default function SettingsPage() {
                   className="input font-mono text-[11px]"
                   aria-label="Прокси Steam API"
                 />
+                {settings.steamProxy.trim() && !checkApiBaseUrl(settings.steamProxy).ok && (
+                  <p className="mt-1.5 text-[9.5px] text-rose">
+                    {checkApiBaseUrl(settings.steamProxy).error}
+                  </p>
+                )}
+                {looksLikeSecretUrl(settings.steamProxy) && (
+                  <p className="mt-1.5 text-[9.5px] text-amber">
+                    Похоже, в адресе есть секрет (key/token). Он будет отправлен владельцу прокси — лучше держать ключ
+                    в секретах воркера.
+                  </p>
+                )}
                 <p className="mt-1.5 text-[9.5px] leading-relaxed text-ink-500">
                   Необязательно. В режиме <span className="text-ink-300">npm run dev</span> приложение уже проксирует
                   Steam через Vite, поэтому CORS не мешает. Для статичной сборки можно поднять свой Cloudflare Worker —
@@ -267,11 +279,62 @@ export default function SettingsPage() {
               className="input mt-1.5 font-mono text-[11px]"
               aria-label="Базовый URL прокси"
             />
+            {settings.proxyBase.trim() && !checkApiBaseUrl(settings.proxyBase).ok && (
+              <p className="mt-1.5 text-[9.5px] text-rose">{checkApiBaseUrl(settings.proxyBase).error}</p>
+            )}
+            {looksLikeSecretUrl(settings.proxyBase) && (
+              <p className="mt-1.5 text-[9.5px] text-amber">
+                Похоже, в адресе есть секрет (key/token). Он уйдёт владельцу прокси — лучше вынести ключ в заголовок
+                или секреты своего воркера.
+              </p>
+            )}
             <div className="mt-1.5 text-[9.5px] leading-relaxed text-ink-500">
               Сюда будут добавляться пути вида <span className="text-ink-300">/matches/123</span> и{' '}
               <span className="text-ink-300">/players/123/matches</span>. Подойдёт своё зеркало, Cloudflare Worker или
               публичный CORS-прокси.
             </div>
+          </div>
+        )}
+
+        {(provider === 'steam' || provider === 'opendota') && (
+          <div className="mt-4 rounded-xl border border-white/[0.07] bg-white/[0.02] p-3">
+            <span className="label">Где хранить ключ</span>
+            <div role="radiogroup" aria-label="Где хранить ключ" className="mt-1.5 flex flex-wrap gap-1.5">
+              {(
+                [
+                  {
+                    scope: 'local' as const,
+                    label: 'В этом браузере',
+                    hint: 'ключ сохраняется в localStorage и переживёт перезапуск',
+                  },
+                  {
+                    scope: 'session' as const,
+                    label: 'Только в этой вкладке',
+                    hint: 'ключ живёт в sessionStorage и исчезает при закрытии вкладки',
+                  },
+                ]
+              ).map((option) => {
+                const active = (settings.keyScope ?? 'local') === option.scope;
+                return (
+                  <button
+                    key={option.scope}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    title={option.hint}
+                    onClick={() => updateSettings({ ...settings, keyScope: option.scope })}
+                    className={`chip ${active ? 'chip-active' : ''}`}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-1.5 text-[9.5px] leading-relaxed text-ink-500">
+              Ключ всё равно отправляется в API{' '}
+              {provider === 'steam' ? 'Valve (и в прокси, если он указан)' : 'OpenDota'} — это необходимо для самого
+              запроса. Настройка влияет только на то, останется ли ключ в браузере после закрытия вкладки.
+            </p>
           </div>
         )}
 
@@ -288,7 +351,7 @@ export default function SettingsPage() {
             Проверить источник
           </button>
           <span className="inline-flex items-center gap-1 text-[9px] text-ink-500">
-            <ShieldCheck size={10} /> ключи не покидают браузер
+            <ShieldCheck size={10} /> ключ уходит в выбранный API{settings.steamProxy || settings.proxyBase ? ' и в указанный прокси' : ''}
           </span>
         </div>
       </div>

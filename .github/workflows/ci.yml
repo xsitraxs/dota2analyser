@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: typecheck · tests · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Установка зависимостей (чистая, по lockfile)
+        run: npm ci
+
+      - name: Типы
+        run: npm run typecheck
+
+      - name: Тесты
+        run: npm test
+
+      - name: Сборка
+        run: npm run build
+
+      - name: Проверки аудита
+        run: npm run audit:checks
+
+      - name: Самопроверка Cloudflare Worker
+        run: node tools/check-worker.mjs
+
+      - name: Аудит зависимостей
+        # Критические и высокие уязвимости ломают сборку.
+        run: npm audit --audit-level=high
+
+  python-tools:
+    name: проверка tools/build-data.py
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Синтаксис и защита распаковки
+        run: |
+          python3 -m py_compile tools/build-data.py
+          python3 tools/check-build-data.py

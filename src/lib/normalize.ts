@@ -48,10 +48,6 @@ function numOrNull(value: unknown): number | null {
   return typeof parsed === 'number' && Number.isFinite(parsed) ? parsed : null;
 }
 
-function str(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
 function arrayOfNumbers(value: unknown): number[] {
   return readNumberArray(value, LIMITS.maxSeriesLength);
 }
@@ -505,9 +501,12 @@ function parseTeamfights(raw: unknown, duration: number): Teamfight[] {
   const fights: Teamfight[] = [];
   for (const entry of rawList) {
     const rawPlayers = readObjectArray(entry.players, LIMITS.maxPlayers);
-    const start = readCount(entry.start);
-    const end = readCount(entry.end, start);
-    if (!Number.isFinite(start) || start < 0 || start > duration + 60) continue;
+    // Отрицательное или нечисловое время драки — признак повреждённых данных,
+    // а не «нулёвая минута»: такие записи отбрасываем.
+    const start = numOrNull(entry.start);
+    const end = numOrNull(entry.end) ?? start;
+    if (start == null || end == null || start < 0 || end < start) continue;
+    if (start > duration + 60) continue;
     const players: TeamfightPlayer[] = rawPlayers.slice(0, LIMITS.maxPlayers).map((p) => {
       const deathsPosRaw = validateCoordMap(p.deaths_pos) ?? {};
       const deathsPos: { x: number; y: number }[] = [];

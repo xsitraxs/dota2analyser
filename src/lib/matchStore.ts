@@ -1,15 +1,13 @@
-import demo1 from '../data/demo/7490235544.json';
-import demo2 from '../data/demo/1781962623.json';
 import { MatchDataError, normalizeMatch } from './normalize';
 import { analyzeMatch } from './analyze';
 import { fetchRawMatch, providerLabel, proxyBase } from './dataSource';
 import { isValidStoredMatch, readMatchId } from './validate';
+import { AppError } from './errors';
+import { isDemoId, loadAllDemoPayloads, loadDemoPayload } from './demoData';
 import type { Settings } from '../types';
 import type { DemoMeta, Match } from '../types';
 import type { ConstantsFile, MatchCoverage } from '../types';
 import data from '../data/constants.json';
-
-const DEMO_MODULES = [demo1, demo2] as unknown[];
 
 const constants = data as unknown as ConstantsFile;
 
@@ -76,16 +74,19 @@ function keyFor(id: number, settings: Settings): string {
   return cacheKey(id, settings.provider, endpointOf(settings));
 }
 
-function demoPayload(id: number): unknown | null {
-  return (
-    DEMO_MODULES.find((payload) => {
-      const candidate = payload as { __demo?: DemoMeta };
-      return candidate.__demo?.matchId === id;
-    }) ?? null
-  );
+/** Демо подгружается отдельным чанком — см. src/lib/demoData.ts. */
+async function demoPayload(id: number): Promise<unknown | null> {
+  if (!isDemoId(id)) return null;
+  const payload = await loadDemoPayload(id);
+  if (payload == null) {
+    throw new AppError(
+      'demo-unavailable',
+      'Не удалось загрузить встроенное демо.',
+      'Демо подгружается отдельным файлом. Проверь соединение и обнови страницу — либо открой матч по ID или импортируй JSON.',
+    );
+  }
+  return payload;
 }
-
-export const DEMO_META_LIST: DemoMeta[] = DEMO_MODULES.map((payload) => (payload as { __demo: DemoMeta }).__demo);
 
 /** Восстанавливает признаки покрытия для записей, сохранённых старой версией. */
 function coverageOf(match: Match): MatchCoverage {
@@ -195,7 +196,7 @@ export async function loadMatch(id: number, settings: Settings, signal?: AbortSi
     return stored.match;
   }
 
-  const demo = demoPayload(id);
+  const demo = await demoPayload(id);
   if (demo) {
     const match = normalizeMatch([demo], { expectedMatchId: id });
     return save(key, match, [makeSource('demo', 'Демо-данные из сборки', demo, match.id)]);
@@ -282,12 +283,10 @@ export function clearMatchCaches(): void {
   }
 }
 
-export function demoMatchId(): number {
-  return DEMO_META_LIST[0]?.matchId ?? 7490235544;
-}
-
-export function getDemoCards(): DemoCard[] {
-  return DEMO_MODULES.map((payload) => {
+export async function getDemoCards(): Promise<DemoCard[]> {
+  const modules = await loadAllDemoPayloads();
+  return modules.flatMap(({ payload }) => {
+   try {
     const match = normalizeMatch([payload]);
     const meta = (payload as { __demo: DemoMeta }).__demo;
     const slot = meta.featuredSlot;
@@ -319,6 +318,10 @@ export function getDemoCards(): DemoCard[] {
       startTime: match.startTime,
       gameMode: match.gameMode,
     };
+    } catch {
+      // Повреждённое демо не должно ломать главную страницу.
+      return [];
+    }
   });
 }
 

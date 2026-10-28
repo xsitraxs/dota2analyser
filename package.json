@@ -9,7 +9,10 @@
     "typecheck": "tsc --noEmit",
     "data": "python3 tools/build-data.py",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:worker": "node tools/check-worker.mjs",
+    "check:tools": "python3 tools/check-build-data.py",
+    "audit:checks": "node tools/audit-checks.cjs"
   },
   "repository": {
     "type": "git",

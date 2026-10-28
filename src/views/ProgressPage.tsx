@@ -45,7 +45,6 @@ export default function ProgressPage() {
   }, [averages]);
 
   const trend = useMemo(() => [...history].reverse(), [history]);
-  const trendPoints = trend.map((entry, index) => ({ x: index, y: entry.overall ?? 0 }));
 
   const suggestedLessons = useMemo(() => {
     if (!weakest) return LESSONS.filter((lesson) => lesson.level === 'base').slice(0, 3);

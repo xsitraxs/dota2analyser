@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ArrowRight,
   ArrowUpRight,
@@ -26,7 +26,7 @@ import { analyzeMatch } from '../lib/analyze';
 import { DIMENSION_META, GAME_MODE_LABEL, HERO_BY_ID } from '../lib/constants';
 import { fmtDate, fmtNum, fmtTime, plural } from '../lib/format';
 import { matchPath } from '../lib/router';
-import { getDemoCards, importMatch } from '../lib/matchStore';
+import { getDemoCards, importMatch, type DemoCard } from '../lib/matchStore';
 import { MatchDataError, normalizeMatch, readJsonFiles } from '../lib/normalize';
 import { parseAccountInput, rankLabel, type RecentMatch } from '../lib/openDota';
 import {
@@ -41,9 +41,10 @@ import {
   type ProfileView,
 } from '../lib/dataSource';
 import { toAppError, type AppError } from '../lib/errors';
+import type { CoachReport, Match, MatchAnalysis, PlayerAnalysis } from '../types';
 import { HeroAvatar, RoleBadge, ScoreRing, SectionHeading, SIDE_COLOR } from '../components/ui';
 import { RadarChart } from '../components/charts';
-import demoRaw from '../data/demo/7490235544.json';
+import { loadDemoPayload, DEMO_META_LIST } from '../lib/demoData';
 
 function extractMatchId(value: string): number | null {
   const fromUrl = value.match(/matches\/(\d{5,})/i);
@@ -53,15 +54,54 @@ function extractMatchId(value: string): number | null {
   return null;
 }
 
+type HeroPreviewData = {
+  match: Match;
+  analysis: MatchAnalysis;
+  player: PlayerAnalysis;
+  coach: CoachReport;
+  meta: { featuredSlot: number; title: string };
+};
+
 function HeroPreview() {
-  const preview = useMemo(() => {
-    const match = normalizeMatch([demoRaw as unknown]);
-    const analysis = analyzeMatch(match);
-    const meta = (demoRaw as unknown as { __demo: { featuredSlot: number; title: string } }).__demo;
-    const player = analysis.bySlot[meta.featuredSlot] ?? analysis.players[0];
-    const coach = buildCoachReport(match, analysis, player.player.slot);
-    return { match, analysis, player, coach, meta };
+  const [preview, setPreview] = useState<HeroPreviewData | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  // Демо подгружается отдельным чанком: первый экран не ждёт 200 КБ JSON.
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const payload = await loadDemoPayload(DEMO_META_LIST[0]?.matchId ?? 7490235544);
+      if (!alive) return;
+      if (payload == null) {
+        setFailed(true);
+        return;
+      }
+      try {
+        const match = normalizeMatch([payload]);
+        const analysis = analyzeMatch(match);
+        const meta = (payload as { __demo: { featuredSlot: number; title: string } }).__demo;
+        const player = analysis.bySlot[meta.featuredSlot] ?? analysis.players[0];
+        const coach = buildCoachReport(match, analysis, player.player.slot);
+        if (alive) setPreview({ match, analysis, player, coach, meta });
+      } catch (error) {
+        console.error('Не удалось построить превью демо-матча:', error);
+        if (alive) setFailed(true);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
   }, []);
+
+  if (!preview) {
+    return (
+      <div className="relative mx-auto w-full max-w-[390px]">
+        <div className="panel flex min-h-[280px] items-center justify-center rounded-[24px] border-white/[0.08] p-5 text-[11px] text-ink-400">
+          {failed ? 'Превью демо недоступно — открой демо-матч ниже.' : 'Загружаю превью демо-матча…'}
+        </div>
+      </div>
+    );
+  }
   const { match, player, coach } = preview;
   const insight = coach.insights.find((item) => item.severity !== 'good') ?? coach.insights[0];
 
@@ -146,7 +186,21 @@ function HeroPreview() {
 }
 
 function DemoSection() {
-  const cards = useMemo(() => getDemoCards(), []);
+  const [cards, setCards] = useState<DemoCard[]>([]);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    void getDemoCards().then((list) => {
+      if (!alive) return;
+      setCards(list);
+      setReady(true);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   return (
     <section id="demos">
       <SectionHeading
@@ -159,6 +213,14 @@ function DemoSection() {
           </a>
         }
       />
+      {!ready && (
+        <div className="panel mt-5 p-6 text-center text-[11px] text-ink-400">Загружаю демо-матчи…</div>
+      )}
+      {ready && !cards.length && (
+        <div className="panel mt-5 p-6 text-center text-[11px] text-ink-400">
+          Демо-данные не загрузились. Открой матч по ID или импортируй JSON.
+        </div>
+      )}
       <div className="mt-5 grid gap-4 md:grid-cols-2">
         {cards.map((card) => {
           const hero = HERO_BY_ID[card.heroId];
@@ -327,26 +389,43 @@ function MyMatchesPanel() {
   const [searching, setSearching] = useState(false);
   const loadedRef = useRef(false);
 
+  // Защита от гонок: новый запрос отменяет предыдущий, а устаревший ответ
+  // не перезаписывает актуальные результаты.
+  const requestId = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+    },
+    [],
+  );
+
   const provider = PROVIDERS.find((item) => item.key === settings.provider);
   const configError = providerProblem(settings);
 
   const runSearch = async (accountId: number) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const id = ++requestId.current;
     setLoading(true);
     setError(null);
     setResults([]);
     try {
       const [nextProfile, nextMatches] = await Promise.all([
-        fetchProfile(accountId, settings),
-        fetchRecentMatches(accountId, settings, 8),
+        fetchProfile(accountId, settings, controller.signal),
+        fetchRecentMatches(accountId, settings, 8, controller.signal),
       ]);
+      if (id !== requestId.current || controller.signal.aborted) return;
       setProfile(nextProfile);
       setMatches(nextMatches ?? []);
     } catch (err) {
+      if (id !== requestId.current || controller.signal.aborted) return;
       setError(toAppError(err));
       setProfile(null);
       setMatches([]);
     } finally {
-      setLoading(false);
+      if (id === requestId.current) setLoading(false);
     }
   };
 
@@ -381,10 +460,12 @@ function MyMatchesPanel() {
       notify('Ссылка на профиль не распознана. Нужен SteamID64 или account_id.', 'error');
       return;
     }
+    const id = ++requestId.current;
     setSearching(true);
     setError(null);
     try {
       const found = await suggestAccounts(value, settings);
+      if (id !== requestId.current) return;
       setResults(found);
       if (!found.length) {
         setError(
@@ -395,10 +476,11 @@ function MyMatchesPanel() {
         );
       }
     } catch (err) {
+      if (id !== requestId.current) return;
       setError(toAppError(err));
       setResults([]);
     } finally {
-      setSearching(false);
+      if (id === requestId.current) setSearching(false);
     }
   };
 
@@ -651,8 +733,7 @@ function ImportPanel() {
           setDragging(false);
           void handleFiles(event.dataTransfer.files);
         }}
-        onClick={() => inputRef.current?.click()}
-        className={`mt-4 flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed px-4 py-8 text-center transition ${
+        className={`mt-4 flex flex-col items-center justify-center rounded-2xl border border-dashed px-4 py-8 text-center transition ${
           dragging
             ? 'border-lime/60 bg-lime/[0.07]'
             : 'border-white/[0.12] bg-white/[0.015] hover:border-white/[0.22] hover:bg-white/[0.03]'
@@ -660,10 +741,12 @@ function ImportPanel() {
       >
         <input
           ref={inputRef}
+          id="import-json-input"
           type="file"
           accept=".json,application/json"
           multiple
-          className="hidden"
+          className="sr-only"
+          disabled={loading}
           onChange={(event) => {
             if (event.target.files) void handleFiles(event.target.files);
           }}
@@ -674,7 +757,16 @@ function ImportPanel() {
         <div className="mt-3 text-[12px] font-semibold text-white">
           {loading ? 'Читаю файлы…' : 'Перетащи JSON сюда'}
         </div>
-        <div className="mt-1 text-[10px] text-ink-500">или нажми, чтобы выбрать</div>
+        {/* Настоящая кнопка с label: зона доступна с клавиатуры, а не только мышью. */}
+        <label
+          htmlFor="import-json-input"
+          className={`btn-secondary mt-3 cursor-pointer text-[11px] focus-within:ring-2 focus-within:ring-lime/40 ${
+            loading ? 'pointer-events-none opacity-60' : ''
+          }`}
+        >
+          <UploadCloud size={13} /> {loading ? 'Загружаю…' : 'Выбрать файлы'}
+        </label>
+        <div className="mt-1 text-[10px] text-ink-500">или перетащи файлы в эту область</div>
       </div>
 
       {error && (

@@ -23,6 +23,10 @@ interface LineChartProps {
   markers?: ChartMarker[];
   className?: string;
   emptyText?: string;
+  /** Подпись для скринридеров: что именно показывает график. */
+  label?: string;
+  /** Единицы по оси X для подсказки «используй стрелки». */
+  xLabel?: string;
 }
 
 export function LineChart({
@@ -36,6 +40,8 @@ export function LineChart({
   markers = [],
   className = '',
   emptyText = 'Недостаточно данных для графика',
+  label = 'График',
+  xLabel = 'время',
 }: LineChartProps) {
   const id = useId().replace(/:/g, '');
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -108,12 +114,45 @@ export function LineChart({
   const yTicks = Array.from({ length: 4 }, (_, index) => minY + ((maxY - minY) / 3) * index);
   const xTicks = Array.from({ length: 4 }, (_, index) => minX + ((maxX - minX) / 3) * index);
 
+  /**
+   * Индекс ближайшей по X точки.
+   *
+   * Раньше индекс считался как «доля ширины × число точек», поэтому на
+   * неравномерных временных рядах подсказка показывала соседний момент.
+   */
+  const indexAtX = (px: number): number => {
+    if (!sorted.length) return 0;
+    const clampedX = Math.max(pad.l, Math.min(pad.l + plotW, px));
+    const value = minX + ((clampedX - pad.l) / plotW) * (maxX - minX);
+    let best = 0;
+    let bestDistance = Infinity;
+    for (let index = 0; index < sorted.length; index += 1) {
+      const distance = Math.abs(sorted[index].x - value);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = index;
+      }
+    }
+    return best;
+  };
+
   const handleMove = (event: React.PointerEvent<SVGSVGElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    const px = event.clientX - rect.left;
-    const ratio = Math.max(0, Math.min(1, (px - pad.l) / plotW));
-    const index = Math.round(ratio * (sorted.length - 1));
-    setHover(index);
+    setHover(indexAtX(event.clientX - rect.left));
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<SVGSVGElement>) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') {
+      return;
+    }
+    event.preventDefault();
+    setHover((current) => {
+      const base = current ?? 0;
+      if (event.key === 'Home') return 0;
+      if (event.key === 'End') return sorted.length - 1;
+      const next = event.key === 'ArrowLeft' ? base - 1 : base + 1;
+      return Math.max(0, Math.min(sorted.length - 1, next));
+    });
   };
 
   const hovered = hover != null ? sorted[Math.min(sorted.length - 1, Math.max(0, hover))] : null;
@@ -129,8 +168,12 @@ export function LineChart({
         viewBox={`0 0 ${width} ${height}`}
         onPointerMove={handleMove}
         onPointerLeave={() => setHover(null)}
+        onFocus={() => setHover((current) => current ?? 0)}
+        onBlur={() => setHover(null)}
+        onKeyDown={handleKeyDown}
+        tabIndex={0}
         role="img"
-        aria-label="График"
+        aria-label={`${label}. Стрелки влево/вправо — перебор точек по ${xLabel}.`}
       >
         <defs>
           <linearGradient id={`area-${id}`} x1="0" y1="0" x2="0" y2="1">
@@ -218,6 +261,7 @@ export function LineChart({
       {hovered && (
         <div
           className="tooltip"
+          role="status"
           style={{
             left: tooltipLeft,
             top: Math.max(30, hoverTop - 12),
@@ -230,6 +274,25 @@ export function LineChart({
           </div>
         </div>
       )}
+
+      {/* Табличная альтернатива: значения доступны без наведения мыши. */}
+      <table className="sr-only">
+        <caption>{label}</caption>
+        <thead>
+          <tr>
+            <th scope="col">{xLabel}</th>
+            <th scope="col">Значение</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((point) => (
+            <tr key={`row-${point.x}`}>
+              <th scope="row">{xFormat(point.x)}</th>
+              <td>{valueFormat(point.y)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
