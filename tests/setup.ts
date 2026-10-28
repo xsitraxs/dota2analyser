@@ -25,6 +25,12 @@ if (typeof window !== 'undefined') {
     });
   }
 
+  // jsdom не реализует scrollTo и выбрасывает «Not implemented» на каждый вызов.
+  window.scrollTo = ((options?: ScrollToOptions | number, y?: number) => {
+    void options;
+    void y;
+  }) as typeof window.scrollTo;
+
   if (!(globalThis as { ResizeObserver?: unknown }).ResizeObserver) {
     class ResizeObserverStub {
       observe(): void {}
