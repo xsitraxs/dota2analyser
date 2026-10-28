@@ -85,6 +85,7 @@ details summary::-webkit-details-marker {
   display: none;
 }
 
+/* Ручной переключатель в настройках (settings.reduceMotion). */
 [data-motion='reduce'] *,
 [data-motion='reduce'] *::before,
 [data-motion='reduce'] *::after {
@@ -92,6 +93,18 @@ details summary::-webkit-details-marker {
   animation-iteration-count: 1 !important;
   transition-duration: 0.001ms !important;
   scroll-behavior: auto !important;
+}
+
+/* Системная настройка «меньше движения» уважается даже без переключателя. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 @layer base {

@@ -4,3 +4,7 @@ dist
 *.local
 .env
 *.tmp.*
+
+# Python
+__pycache__/
+*.py[cod]
