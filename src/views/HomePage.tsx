@@ -26,7 +26,7 @@ import { analyzeMatch } from '../lib/analyze';
 import { DIMENSION_META, GAME_MODE_LABEL, HERO_BY_ID } from '../lib/constants';
 import { fmtDate, fmtNum, fmtTime, plural } from '../lib/format';
 import { matchPath } from '../lib/router';
-import { cacheMatch, getDemoCards } from '../lib/matchStore';
+import { getDemoCards, importMatch } from '../lib/matchStore';
 import { MatchDataError, normalizeMatch, readJsonFiles } from '../lib/normalize';
 import { parseAccountInput, rankLabel, type RecentMatch } from '../lib/openDota';
 import {
@@ -616,7 +616,7 @@ function ImportPanel() {
           throw err;
         }
       }
-      cacheMatch(match, settings.provider);
+      importMatch(raw, settings);
       notify(`Матч #${match.id} загружен.`, 'success');
       navigate(matchPath(match.id, 'overview'));
     } catch (err) {

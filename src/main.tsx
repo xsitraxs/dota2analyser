@@ -7,9 +7,12 @@ import '@fontsource/unbounded/latin-700.css';
 import '@fontsource-variable/manrope';
 import './index.css';
 import App from './App';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </React.StrictMode>,
 );

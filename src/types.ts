@@ -410,6 +410,11 @@ export interface Settings {
   steamProxy: string;
   /** Базовый URL OpenDota-совместимого API для режима «прокси». */
   proxyBase: string;
+  /**
+   * Где хранить ключи API: `local` — в localStorage (между сессиями),
+   * `session` — только в sessionStorage (до закрытия вкладки).
+   */
+  keyScope: 'local' | 'session';
 }
 
 export interface PlanTaskState {

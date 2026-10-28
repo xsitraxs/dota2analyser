@@ -27,13 +27,27 @@ export function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-export function apiMatch(): Record<string, unknown> {
-  return clone(FIXTURES.openDotaMatch) as unknown as Record<string, unknown>;
+type Raw = Record<string, unknown>;
+
+/** Переставляет match_id во всём массиве игроков (как это делает реальный API). */
+function retarget(payload: Raw, matchId: number): Raw {
+  payload.match_id = matchId;
+  const players = Array.isArray(payload.players) ? (payload.players as Raw[]) : [];
+  players.forEach((player) => {
+    player.match_id = matchId;
+  });
+  return payload;
 }
 
-export function parsedMatch(matchId: number = API_MATCH_ID): Record<string, unknown> {
+export function apiMatch(matchId: number = API_MATCH_ID): Raw {
+  const payload = clone(FIXTURES.openDotaMatch) as unknown as Raw;
+  return matchId === API_MATCH_ID ? payload : retarget(payload, matchId);
+}
+
+export function parsedMatch(matchId: number = API_MATCH_ID): Raw {
   const source = matchId === API_MATCH_ID ? FIXTURES.openDotaParsed : FIXTURES.openDotaParsedOther;
-  return clone(source) as unknown as Record<string, unknown>;
+  const payload = clone(source) as unknown as Raw;
+  return payload.match_id === matchId ? payload : retarget(payload, matchId);
 }
 
 export function valveDetailsRaw(): Record<string, unknown> {

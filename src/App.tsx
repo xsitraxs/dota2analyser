@@ -12,9 +12,12 @@ import {
   loadSettings,
   rememberPlayerSlot,
   removeHistory,
+  saveIdentity,
   saveSettings,
   setLessonDone,
+  syncIdentity,
 } from './lib/storage';
+import { clearMatchCaches } from './lib/matchStore';
 import type { HistoryEntry, Settings } from './types';
 import HomePage from './views/HomePage';
 import MatchPage from './views/MatchPage';
@@ -55,12 +58,29 @@ export default function App() {
 
   const markAsMe = useCallback(
     (matchId: number, slot: number, accountId: number | null) => {
-      const next = rememberPlayerSlot(matchId, slot, accountId);
+      let next = rememberPlayerSlot(matchId, slot, accountId);
+      // «Это я» синхронизирует и сохранённый аккаунт: иначе настройки и
+      // выбор игрока продолжали жить как два независимых источника истины.
+      if (accountId != null && settings.accountId !== accountId) {
+        saveSettings({ ...settings, accountId, playerName: settings.playerName });
+        setSettings({ ...settings, accountId });
+        next = syncIdentity(next, accountId);
+        saveIdentity(next);
+      }
       setIdentity({ ...next });
       notify('Отлично! Теперь этот игрок будет открываться первым.', 'success');
     },
-    [notify],
+    [notify, settings],
   );
+
+  // Сохранённый аккаунт — источник истины: подтягиваем его в identity.
+  useEffect(() => {
+    if (settings.accountId == null) return;
+    if (identity.accountId === settings.accountId) return;
+    const next = syncIdentity(identity, settings.accountId);
+    saveIdentity(next);
+    setIdentity(next);
+  }, [settings.accountId, identity]);
 
   const recordHistory = useCallback((entry: HistoryEntry) => {
     const next = addHistory(entry);
@@ -78,7 +98,11 @@ export default function App() {
   }, []);
 
   const resetEverything = useCallback(() => {
+    // Полный сброс = всё, что приложение сохранило в браузере:
+    // localStorage (настройки, история, прогресс, профиль, ключи),
+    // sessionStorage (кэши загруженных матчей) и оперативная память.
     clearAll();
+    clearMatchCaches();
     const defaults: Settings = loadSettings();
     setSettings(defaults);
     setHistory([]);
