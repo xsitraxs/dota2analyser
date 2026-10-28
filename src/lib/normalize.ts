@@ -1,7 +1,24 @@
-import { HERO_BY_ID, HERO_BY_NAME, ITEM_BY_ID } from './constants';
+import { HERO_BY_ID, ITEM_BY_ID } from './constants';
+import {
+  LIMITS,
+  checkFileSize,
+  isRecord,
+  readCount,
+  readCountOrNull,
+  readDuration,
+  readMatchId,
+  readNumberArray,
+  readObjectArray,
+  readRecord,
+  readSlot,
+  readText,
+  validateCoordMap,
+  validatePlayers,
+} from './validate';
 import type {
   DemoMeta,
   Match,
+  MatchCoverage,
   Objective,
   ObjectiveKind,
   PickBan,
@@ -13,18 +30,11 @@ import type {
   WardPoint,
 } from '../types';
 
-type Raw = Record<string, any>;
+export { MatchDataError } from './matchDataError';
+export type { MatchDataErrorCode } from './matchDataError';
+import { MatchDataError } from './matchDataError';
 
-export class MatchDataError extends Error {
-  code: 'no-api' | 'invalid' | 'empty';
-  matchId?: number;
-  constructor(code: 'no-api' | 'invalid' | 'empty', message: string, matchId?: number) {
-    super(message);
-    this.name = 'MatchDataError';
-    this.code = code;
-    this.matchId = matchId;
-  }
-}
+type Raw = Record<string, unknown>;
 
 const SIDE_LABEL: Record<Side, string> = { radiant: 'Radiant', dire: 'Dire' };
 
@@ -43,8 +53,7 @@ function str(value: unknown): string {
 }
 
 function arrayOfNumbers(value: unknown): number[] {
-  if (!Array.isArray(value)) return [];
-  return value.map((v) => num(v)).filter((v) => Number.isFinite(v));
+  return readNumberArray(value, LIMITS.maxSeriesLength);
 }
 
 function slotSide(slot: number): Side {
@@ -64,60 +73,124 @@ function reverseSide(side: Side | null): Side | null {
 }
 
 function unwrap(input: Raw): Raw {
-  if (input.result && typeof input.result === 'object' && !Array.isArray(input.result) && !input.players) {
-    return input.result as Raw;
+  if (isRecord(input.result) && !Array.isArray(input.players)) {
+    return input.result;
   }
   return input;
 }
 
-interface InputSet {
+export interface InputSet {
   api: Raw | null;
   parsed: Raw | null;
   demo: DemoMeta | null;
   matchId: number | null;
 }
 
-export function extractInputs(inputs: unknown[]): InputSet {
+export interface ExtractOptions {
+  /** Ожидаемый match_id: источники с другим ID отклоняются (защита от склейки разных матчей). */
+  expectedMatchId?: number | null;
+}
+
+/**
+ * Разбирает список источников (ответ API, файл парса, демо-пакет) на базу и парс.
+ *
+ * Главное правило: все источники должны относиться к одному матчу. Раньше
+ * первый попавшийся API-объект и первый попавшийся парс склеивались без
+ * проверки ID, поэтому таймлайны чужого матча попадали в отчёт как свои.
+ */
+export function extractInputs(inputs: unknown[], options: ExtractOptions = {}): InputSet {
   const flat: Raw[] = [];
-  const walk = (value: unknown) => {
+  const seen = new Set<unknown>();
+  const walk = (value: unknown, depth: number) => {
+    if (depth > 6 || value == null) return;
     if (Array.isArray(value)) {
-      value.forEach(walk);
+      if (seen.has(value)) return;
+      seen.add(value);
+      value.forEach((item) => walk(item, depth + 1));
       return;
     }
-    if (value && typeof value === 'object') flat.push(value as Raw);
+    if (isRecord(value)) {
+      if (seen.has(value)) return;
+      seen.add(value);
+      flat.push(value);
+    }
   };
-  inputs.forEach(walk);
+  (Array.isArray(inputs) ? inputs : []).forEach((item) => walk(item, 0));
+
+  if (!flat.length) {
+    throw new MatchDataError('empty', 'Не передано ни одного источника данных матча.');
+  }
 
   let api: Raw | null = null;
   let parsed: Raw | null = null;
   let demo: DemoMeta | null = null;
   let matchId: number | null = null;
+  const ids = new Set<number>();
+
+  const expected = options.expectedMatchId ?? null;
+  const expectedId = readMatchId(expected);
 
   for (const item of flat) {
-    if (item.__demo && typeof item.__demo === 'object') {
-      demo = item.__demo as DemoMeta;
+    if (isRecord(item.__demo)) {
+      demo = item.__demo as unknown as DemoMeta;
     }
     const candidates: Raw[] = [];
-    if (item.api && typeof item.api === 'object') candidates.push(item.api as Raw);
-    if (item.parsed && typeof item.parsed === 'object') candidates.push(item.parsed as Raw);
+    if (isRecord(item.api)) candidates.push(item.api);
+    if (isRecord(item.parsed) && !Array.isArray(item.parsed)) candidates.push(item.parsed);
     if (!item.api && !item.parsed) candidates.push(item);
+
     for (const rawCandidate of candidates) {
       const candidate = unwrap(rawCandidate);
-      const players = Array.isArray(candidate.players) ? (candidate.players as Raw[]) : [];
-      const id = numOrNull(candidate.match_id);
-      if (id) matchId = id;
-      if (!players.length) continue;
+      const rawPlayers = Array.isArray(candidate.players) ? candidate.players : [];
+      // null/мусор в списке игроков не должен приводить к TypeError:
+      // сначала отфильтровываем, потом проверяем признаки.
+      const players: Raw[] = rawPlayers.filter(isRecord);
+      const id = readMatchId(candidate.match_id);
+
+      if (id != null) {
+        ids.add(id);
+        if (matchId == null) matchId = id;
+        if (id !== matchId) {
+          throw new MatchDataError(
+            'mismatch',
+            `Данные относятся к разным матчам (#${matchId} и #${id}). Таймлайны и статистика разных матчей не склеиваются.`,
+            matchId,
+          );
+        }
+        if (expectedId != null && id !== expectedId) {
+          throw new MatchDataError(
+            'mismatch',
+            `Данные относятся к матчу #${id}, а ожидался #${expectedId}.`,
+            expectedId,
+          );
+        }
+      }
+
+      if (!rawPlayers.length) continue;
       const hasApi = players.some((p) => numOrNull(p.hero_id) != null);
       const hasParsed = players.some((p) => Array.isArray(p.gold_t) && p.gold_t.length > 1);
       if (hasApi && !api) api = candidate;
       if (hasParsed && !parsed) parsed = candidate;
-      if (hasApi && hasParsed && !parsed) parsed = candidate;
     }
   }
 
+  if (ids.size > 1) {
+    const [first, second] = [...ids];
+    throw new MatchDataError(
+      'mismatch',
+      `Данные относятся к разным матчам (#${first} и #${second}). Таймлайны и статистика разных матчей не склеиваются.`,
+      first,
+    );
+  }
+
+  if (expectedId != null && matchId != null && matchId !== expectedId) {
+    throw new MatchDataError('mismatch', `Данные относятся к матчу #${matchId}, а ожидался #${expectedId}.`, expectedId);
+  }
+
   if (!api && parsed) {
-    const players = Array.isArray(parsed.players) ? (parsed.players as Raw[]) : [];
-    if (!players.some((p) => numOrNull(p.hero_id) != null)) {
+    const players: Raw[] = Array.isArray(parsed.players) ? (parsed.players.filter(isRecord) as Raw[]) : [];
+    const hasHeroes = players.some((p) => numOrNull(p.hero_id) != null);
+    if (!hasHeroes) {
       throw new MatchDataError(
         'no-api',
         'В файле есть данные реплея, но нет базовой статистики (героев и игроков). Загрузи API-матч или дай догрузить его из OpenDota.',
@@ -131,15 +204,13 @@ export function extractInputs(inputs: unknown[]): InputSet {
     throw new MatchDataError('invalid', 'Не удалось найти матч в данных. Нужен JSON ответа OpenDota /api/matches/:id.');
   }
 
-  return { api, parsed, demo, matchId: matchId ?? numOrNull(api.match_id) };
+  return { api, parsed, demo, matchId: matchId ?? readMatchId(api.match_id) };
 }
 
 function normalizeWards(value: unknown): WardPoint[] {
-  if (!Array.isArray(value)) return [];
+  const raw = readObjectArray(value, LIMITS.maxWardPoints);
   const points: WardPoint[] = [];
-  for (const raw of value) {
-    if (!raw || typeof raw !== 'object') continue;
-    const entry = raw as Raw;
+  for (const entry of raw) {
     const time = numOrNull(entry.time);
     const x = numOrNull(entry.x);
     const y = numOrNull(entry.y);
@@ -149,24 +220,42 @@ function normalizeWards(value: unknown): WardPoint[] {
   return points.sort((a, b) => a.time - b.time);
 }
 
-function normalizeLanePos(value: unknown): Record<string, Record<string, number>> | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  return value as Record<string, Record<string, number>>;
+function normalizePurchaseLog(value: unknown): PurchaseEntry[] {
+  const raw = readObjectArray(value, LIMITS.maxLogEntries);
+  const out: PurchaseEntry[] = [];
+  for (const entry of raw) {
+    const time = numOrNull(entry.time);
+    const key = readText(entry.key, 64);
+    if (time == null || !key) continue;
+    out.push({ time, key, charges: readCountOrNull(entry.charges) ?? undefined });
+  }
+  return out.sort((a, b) => a.time - b.time);
 }
 
-function normalizePlayer(apiPlayer: Raw, parsedPlayer: Raw | null, index: number): Player {
-  const slot = num(apiPlayer.player_slot, index < 5 ? index : index + 123);
+function normalizeKillsLog(value: unknown): { time: number; key: string }[] {
+  const raw = readObjectArray(value, LIMITS.maxLogEntries);
+  const out: { time: number; key: string }[] = [];
+  for (const entry of raw) {
+    const time = numOrNull(entry.time);
+    const key = readText(entry.key, 64);
+    if (time == null || !key) continue;
+    out.push({ time, key });
+  }
+  return out.sort((a, b) => a.time - b.time);
+}
+
+function normalizePlayer(apiPlayer: Raw, parsedPlayer: Raw | null, slot: number): Player {
   const source = parsedPlayer ?? apiPlayer;
   const pick = (key: string): unknown => (parsedPlayer && parsedPlayer[key] !== undefined ? parsedPlayer[key] : apiPlayer[key]);
 
   const items: number[] = [];
   for (let i = 0; i <= 5; i += 1) {
-    const id = num(apiPlayer[`item_${i}`]);
+    const id = readCount(apiPlayer[`item_${i}`]);
     if (id > 0) items.push(id);
   }
   const backpack: number[] = [];
   for (let i = 0; i <= 2; i += 1) {
-    const id = num(apiPlayer[`backpack_${i}`]);
+    const id = readCount(apiPlayer[`backpack_${i}`]);
     if (id > 0) backpack.push(id);
   }
 
@@ -195,65 +284,59 @@ function normalizePlayer(apiPlayer: Raw, parsedPlayer: Raw | null, index: number
     if (xpT.length) xpT = xpT.slice(0, length);
   }
 
-  const gold = num(apiPlayer.gold, num(source.gold));
-  const goldSpent = num(apiPlayer.gold_spent, num(source.gold_spent));
-  const inventoryValue = [...items, ...backpack, num(apiPlayer.item_neutral)]
+  const gold = readCount(apiPlayer.gold, readCount(source.gold));
+  const goldSpent = readCount(apiPlayer.gold_spent, readCount(source.gold_spent));
+  const inventoryValue = [...items, ...backpack, readCount(apiPlayer.item_neutral)]
     .filter((id) => id > 0)
     .map((id) => ITEM_BY_ID[id]?.cost ?? 0)
     .reduce((a, b) => a + b, 0);
-  let netWorth = numOrNull(apiPlayer.net_worth);
+  let netWorth = readCountOrNull(apiPlayer.net_worth);
   if (netWorth == null) {
     netWorth = gold + inventoryValue;
     if (netWorth < goldSpent * 0.4) netWorth = goldSpent + gold;
   }
 
-  const purchaseLog: PurchaseEntry[] = Array.isArray(pick('purchase_log'))
-    ? (pick('purchase_log') as Raw[])
-        .map((entry) => ({
-          time: num(entry.time),
-          key: str(entry.key),
-          charges: numOrNull(entry.charges) ?? undefined,
-        }))
-        .filter((entry) => entry.key && Number.isFinite(entry.time))
-        .sort((a, b) => a.time - b.time)
-    : [];
-
-  const killsLog = Array.isArray(pick('kills_log'))
-    ? (pick('kills_log') as Raw[])
-        .map((entry) => ({ time: num(entry.time), key: str(entry.key) }))
-        .filter((entry) => entry.key && Number.isFinite(entry.time))
-        .sort((a, b) => a.time - b.time)
-    : [];
-
   const obsLog = normalizeWards(pick('obs_log'));
   const senLog = normalizeWards(pick('sen_log'));
+
+  // «Нет данных» и «измеренный ноль» — разные вещи: отсутствующие поля парса
+  // остаются null и не учитываются в оценках.
+  const obsPlacedRaw = readCountOrNull(pick('obs_placed'));
+  const senPlacedRaw = readCountOrNull(pick('sen_placed'));
+  const obsPlaced = obsPlacedRaw ?? (obsLog.length ? obsLog.length : null);
+  const senPlaced = senPlacedRaw ?? (senLog.length ? senLog.length : null);
+  const runePickupsRaw = readCountOrNull(pick('rune_pickups'));
+  const runesLog = pick('runes_log');
+  const runePickups = runePickupsRaw ?? (Array.isArray(runesLog) ? runesLog.length : null);
 
   const rawLane = numOrNull(pick('lane'));
   const laneRole = numOrNull(pick('lane_role'));
   const parsedFlag = goldT.length > 1;
 
+  const name = readText(apiPlayer.personaname) || readText(apiPlayer.name) || `Игрок ${(slot % 128) + 1}`;
+
   return {
     slot,
     isRadiant: slotSide(slot) === 'radiant',
-    heroId: num(apiPlayer.hero_id),
-    accountId: numOrNull(apiPlayer.account_id),
-    name: str(apiPlayer.personaname).trim() || str(apiPlayer.name).trim() || `Игрок ${(slot % 128) + 1}`,
-    kills: num(apiPlayer.kills),
-    deaths: num(apiPlayer.deaths),
-    assists: num(apiPlayer.assists),
-    gpm: num(apiPlayer.gold_per_min),
-    xpm: num(apiPlayer.xp_per_min),
-    lastHits: num(apiPlayer.last_hits),
-    denies: num(apiPlayer.denies),
+    heroId: readCount(apiPlayer.hero_id),
+    accountId: readCountOrNull(apiPlayer.account_id),
+    name,
+    kills: readCount(apiPlayer.kills),
+    deaths: readCount(apiPlayer.deaths),
+    assists: readCount(apiPlayer.assists),
+    gpm: readCount(apiPlayer.gold_per_min),
+    xpm: readCount(apiPlayer.xp_per_min),
+    lastHits: readCount(apiPlayer.last_hits),
+    denies: readCount(apiPlayer.denies),
     netWorth,
-    level: num(apiPlayer.level),
-    heroDamage: num(apiPlayer.hero_damage),
-    towerDamage: num(apiPlayer.tower_damage),
-    heroHealing: num(apiPlayer.hero_healing),
+    level: readCount(apiPlayer.level),
+    heroDamage: readCount(apiPlayer.hero_damage),
+    towerDamage: readCount(apiPlayer.tower_damage),
+    heroHealing: readCount(apiPlayer.hero_healing),
     gold,
     goldSpent,
     items,
-    neutralItem: numOrNull(apiPlayer.item_neutral),
+    neutralItem: readCountOrNull(apiPlayer.item_neutral),
     backpack,
     laneRole,
     rawLane,
@@ -263,28 +346,26 @@ function normalizePlayer(apiPlayer: Raw, parsedPlayer: Raw | null, index: number
     lhT,
     dnT,
     xpT,
-    purchaseLog,
-    killsLog,
-    buybackLog: Array.isArray(pick('buyback_log'))
-      ? (pick('buyback_log') as Raw[]).map((entry) => ({ time: num(entry.time) }))
-      : [],
+    purchaseLog: normalizePurchaseLog(pick('purchase_log')),
+    killsLog: normalizeKillsLog(pick('kills_log')),
+    buybackLog: readObjectArray(pick('buyback_log'), LIMITS.maxLogEntries)
+      .map((entry) => ({ time: num(entry.time) }))
+      .filter((entry) => Number.isFinite(entry.time))
+      .sort((a, b) => a.time - b.time),
     obsLog,
     senLog,
-    lanePos: normalizeLanePos(pick('lane_pos')),
-    obsPlaced: num(pick('obs_placed'), obsLog.length),
-    senPlaced: num(pick('sen_placed'), senLog.length),
-    campsStacked: num(pick('camps_stacked')),
-    runePickups: num(
-      pick('rune_pickups'),
-      Array.isArray(pick('runes_log')) ? (pick('runes_log') as Raw[]).length : 0,
-    ),
-    roshansKilled: num(pick('roshans_killed')),
-    stuns: num(pick('stuns')),
-    maxHeroHit: num(pick('max_hero_hit')),
-    multiKills: (pick('multi_kills') as Record<string, number>) ?? {},
-    killStreaks: (pick('kill_streaks') as Record<string, number>) ?? {},
-    itemUses: (pick('item_uses') as Record<string, number>) ?? {},
-    abilityUses: (pick('ability_uses') as Record<string, number>) ?? {},
+    lanePos: validateCoordMap(pick('lane_pos')),
+    obsPlaced,
+    senPlaced,
+    campsStacked: readCountOrNull(pick('camps_stacked')),
+    runePickups,
+    roshansKilled: readCountOrNull(pick('roshans_killed')),
+    stuns: readCountOrNull(pick('stuns')),
+    maxHeroHit: readCountOrNull(pick('max_hero_hit')),
+    multiKills: readRecord(pick('multi_kills')),
+    killStreaks: readRecord(pick('kill_streaks')),
+    itemUses: readRecord(pick('item_uses')),
+    abilityUses: readRecord(pick('ability_uses')),
     teamfightParticipation: numOrNull(pick('teamfight_participation')),
     isParsed: parsedFlag,
   };
@@ -293,44 +374,47 @@ function normalizePlayer(apiPlayer: Raw, parsedPlayer: Raw | null, index: number
 function parseBuildingKey(key: string): {
   kind: ObjectiveKind;
   target: Side;
-  lane?: 'top' | 'mid' | 'bot';
+  lane: 'top' | 'mid' | 'bot';
   tier?: number;
   title: string;
 } | null {
-  if (!key.startsWith('npc_dota_goodguys') && !key.startsWith('npc_dota_badguys')) return null;
-  const target: Side = key.includes('badguys') ? 'dire' : 'radiant';
-  const laneMatch = key.match(/_(top|mid|bot)(?:_|$)/);
-  const lane = laneMatch ? (laneMatch[1] as 'top' | 'mid' | 'bot') : undefined;
-  if (key.includes('_fort')) {
-    return { kind: 'fort', target, title: 'Трон разрушен' };
+  const match = key.match(/^(npc_dota_(good|bad)guys_(tower|rax|fort)\w*)(?:_(\d))?_?(top|mid|bot)?$/i);
+  if (!match) return null;
+  const [, , side, type, tier, lane] = match;
+  const target: Side = side === 'good' ? 'radiant' : 'dire';
+  const laneValue: 'top' | 'mid' | 'bot' = (lane as 'top' | 'mid' | 'bot') ?? 'mid';
+  if (type === 'fort') {
+    return { kind: 'fort', target, lane: laneValue, title: 'Казармы (T4)' };
   }
-  if (key.includes('_rax')) {
-    return { kind: 'rax', target, lane, title: 'Барак разрушен' };
+  if (type === 'rax') {
+    return { kind: 'rax', target, lane: laneValue, title: `Казармы ${laneValue.toUpperCase()}` };
   }
-  const towerMatch = key.match(/_tower(\d)/);
-  if (towerMatch) {
-    return { kind: 'tower', target, lane, tier: Number(towerMatch[1]), title: `Башня T${towerMatch[1]} разрушена` };
-  }
-  return { kind: 'other', target, title: 'Строение разрушено' };
+  const tierNumber = tier ? Number(tier) : undefined;
+  return {
+    kind: 'tower',
+    target,
+    lane: laneValue,
+    tier: tierNumber,
+    title: tierNumber ? `Башня T${tierNumber}` : 'Башня',
+  };
 }
 
-function parseObjectives(raw: unknown, playersBySlot: Map<number, Player>): Objective[] {
-  if (!Array.isArray(raw)) return [];
+function parseObjectives(raw: unknown, playersBySlot: Map<number, Player>, duration: number): Objective[] {
+  const rawList = readObjectArray(raw, LIMITS.maxLogEntries);
   const objectives: Objective[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
-    const entry = item as Raw;
-    const time = num(entry.time);
-    const type = str(entry.type);
-    const slot = numOrNull(entry.player_slot) ?? numOrNull(entry.slot);
+  const maxTime = duration + 60;
+  for (const entry of rawList) {
+    const time = numOrNull(entry.time);
+    if (time == null || !Number.isFinite(time) || time < 0 || time > maxTime) continue;
+    const type = readText(entry.type, 64);
+    const slot = readSlot(entry.player_slot) ?? readSlot(entry.slot);
     const player = slot != null ? playersBySlot.get(slot) : undefined;
     const heroId = player?.heroId ?? null;
 
     if (type === 'building_kill') {
-      const key = str(entry.key);
-      const parsed = parseBuildingKey(key);
+      const parsed = parseBuildingKey(readText(entry.key, 64));
       if (!parsed) continue;
-      const laneRu = parsed.lane === 'top' ? 'топ' : parsed.lane === 'mid' ? 'мид' : parsed.lane === 'bot' ? 'бот' : '';
+      const laneRu = parsed.lane === 'top' ? 'топ' : parsed.lane === 'mid' ? 'мид' : 'бот';
       const detail = [SIDE_LABEL[parsed.target], laneRu].filter(Boolean).join(' · ');
       const importance =
         parsed.kind === 'fort' ? 10 : parsed.kind === 'rax' ? 9 : parsed.tier ? Math.min(8, 4 + parsed.tier) : 4;
@@ -416,35 +500,36 @@ function parseObjectives(raw: unknown, playersBySlot: Map<number, Player>): Obje
   return objectives.sort((a, b) => a.time - b.time);
 }
 
-function parseTeamfights(raw: unknown): Teamfight[] {
-  if (!Array.isArray(raw)) return [];
+function parseTeamfights(raw: unknown, duration: number): Teamfight[] {
+  const rawList = readObjectArray(raw, LIMITS.maxTeamfights);
   const fights: Teamfight[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
-    const entry = item as Raw;
-    const rawPlayers = Array.isArray(entry.players) ? (entry.players as Raw[]) : [];
-    const players: TeamfightPlayer[] = rawPlayers.map((p) => {
-      const deathsPosRaw = (p.deaths_pos ?? {}) as Record<string, Record<string, number>>;
+  for (const entry of rawList) {
+    const rawPlayers = readObjectArray(entry.players, LIMITS.maxPlayers);
+    const start = readCount(entry.start);
+    const end = readCount(entry.end, start);
+    if (!Number.isFinite(start) || start < 0 || start > duration + 60) continue;
+    const players: TeamfightPlayer[] = rawPlayers.slice(0, LIMITS.maxPlayers).map((p) => {
+      const deathsPosRaw = validateCoordMap(p.deaths_pos) ?? {};
       const deathsPos: { x: number; y: number }[] = [];
       for (const [x, row] of Object.entries(deathsPosRaw)) {
-        if (!row || typeof row !== 'object') continue;
         for (const [y, count] of Object.entries(row)) {
-          const times = Math.max(1, Math.min(4, num(count, 1)));
+          const times = Math.max(1, Math.min(4, readCount(count, 1)));
           for (let i = 0; i < times; i += 1) {
-            deathsPos.push({ x: num(x), y: num(y) });
+            deathsPos.push({ x: Number(x), y: Number(y) });
           }
         }
       }
       return {
-        damage: num(p.damage),
-        healing: num(p.healing),
-        goldDelta: num(p.gold_delta),
-        xpDelta: num(p.xp_delta),
-        deaths: num(p.deaths),
+        damage: readCount(p.damage),
+        healing: readCount(p.healing),
+        goldDelta: readCount(p.gold_delta),
+        xpDelta: readCount(p.xp_delta),
+        deaths: readCount(p.deaths),
         deathsPos,
       };
     });
-    while (players.length < 10) {
+    // Порядок игроков в драке совпадает с порядком слотов (0–4 Radiant, 128–132 Dire).
+    while (players.length < LIMITS.maxPlayers) {
       players.push({ damage: 0, healing: 0, goldDelta: 0, xpDelta: 0, deaths: 0, deathsPos: [] });
     }
     const radiantGold = players.slice(0, 5).reduce((acc, p) => acc + p.goldDelta, 0);
@@ -452,9 +537,9 @@ function parseTeamfights(raw: unknown): Teamfight[] {
     const winner: Side | 'even' =
       Math.abs(radiantGold - direGold) < 250 ? 'even' : radiantGold > direGold ? 'radiant' : 'dire';
     fights.push({
-      start: num(entry.start),
-      end: num(entry.end),
-      deaths: num(entry.deaths),
+      start,
+      end: Math.max(start, end),
+      deaths: readCount(entry.deaths),
       players,
       radiantGold,
       direGold,
@@ -465,11 +550,17 @@ function parseTeamfights(raw: unknown): Teamfight[] {
   return fights.sort((a, b) => a.start - b.start);
 }
 
+/**
+ * Считает преимущество по минутам из таймлайнов.
+ * Длина ряда ограничена покрытием данных: за пределами таймлайна значений нет.
+ */
 function deriveAdvantage(players: Player[], duration: number, field: 'goldT' | 'xpT'): number[] {
-  const length = Math.floor(duration / 60) + 1;
-  const out: number[] = [];
   const timed = players.filter((p) => p.times.length && p[field].length);
   if (!timed.length) return [];
+  const maxCovered = Math.max(...timed.map((p) => Math.min(p.times.length, p[field].length)));
+  const length = Math.min(Math.floor(duration / 60) + 1, maxCovered);
+  if (length <= 0) return [];
+  const out: number[] = [];
   for (let minute = 0; minute < length; minute += 1) {
     const t = minute * 60;
     let radiant = 0;
@@ -493,12 +584,13 @@ function deriveAdvantage(players: Player[], duration: number, field: 'goldT' | '
 }
 
 function parsePicksBans(raw: unknown, players: Player[]): PickBan[] {
-  if (Array.isArray(raw) && raw.length) {
-    return raw.map((entry) => ({
-      heroId: num((entry as Raw).hero_id),
-      isPick: Boolean((entry as Raw).is_pick),
-      team: num((entry as Raw).team),
-      order: num((entry as Raw).order),
+  const rawList = readObjectArray(raw, LIMITS.maxPicksBans);
+  if (rawList.length) {
+    return rawList.map((entry, index) => ({
+      heroId: readCount(entry.hero_id),
+      isPick: Boolean(entry.is_pick),
+      team: readCount(entry.team),
+      order: readCount(entry.order, index),
     }));
   }
   return players.map((player, index) => ({
@@ -509,29 +601,47 @@ function parsePicksBans(raw: unknown, players: Player[]): PickBan[] {
   }));
 }
 
-export function normalizeMatch(inputs: unknown[]): Match {
-  const { api, parsed, demo } = extractInputs(inputs);
+export interface NormalizeOptions extends ExtractOptions {
+  /** Пропустить проверку ожидаемого ID (используется только в тестах совместимости). */
+  ignoreExpectedId?: boolean;
+}
+
+export function normalizeMatch(inputs: unknown[], options: NormalizeOptions = {}): Match {
+  const { api, parsed, demo } = extractInputs(inputs, options);
   if (!api) throw new MatchDataError('invalid', 'Не найден матч.');
 
-  const apiPlayersRaw = Array.isArray(api.players) ? (api.players as Raw[]) : [];
-  if (apiPlayersRaw.length < 2) {
-    throw new MatchDataError('invalid', 'В данных нет списка игроков.');
-  }
-  const parsedPlayersRaw = parsed && Array.isArray(parsed.players) ? (parsed.players as Raw[]) : [];
-  const parsedBySlot = new Map<number, Raw>();
-  for (const p of parsedPlayersRaw) {
-    const slot = numOrNull(p.player_slot);
-    if (slot != null) parsedBySlot.set(slot, p);
+  const matchId = readMatchId(api.match_id) ?? readMatchId(parsed?.match_id);
+  if (matchId == null) throw new MatchDataError('invalid', 'В данных нет корректного ID матча.');
+
+  const apiPlayers = validatePlayers(api.players, matchId);
+  const expectedId = options.ignoreExpectedId ? null : (options.expectedMatchId ?? null);
+  if (expectedId != null && matchId !== expectedId) {
+    throw new MatchDataError('mismatch', `Данные относятся к матчу #${matchId}, а ожидался #${expectedId}.`, expectedId);
   }
 
-  const sortedApi = [...apiPlayersRaw].sort((a, b) => num(a.player_slot) - num(b.player_slot));
-  const players = sortedApi.map((apiPlayer, index) => {
-    const slot = num(apiPlayer.player_slot, index < 5 ? index : index + 123);
-    return normalizePlayer(apiPlayer, parsedBySlot.get(slot) ?? null, index);
+  const parsedPlayersRaw = parsed && Array.isArray(parsed.players) ? readObjectArray(parsed.players, LIMITS.maxPlayers) : [];
+  const parsedBySlot = new Map<number, Raw>();
+  for (const p of parsedPlayersRaw) {
+    const slot = readSlot(p.player_slot);
+    // Повторение слота в парсе — признак повреждённых данных: отклоняем весь источник.
+    if (slot == null || parsedBySlot.has(slot)) {
+      throw new MatchDataError('invalid', 'В данных парса игроки повторяются или слоты повреждены.', matchId);
+    }
+    parsedBySlot.set(slot, p);
+  }
+
+  const duration = readDuration(api.duration) ?? readDuration(parsed?.duration);
+  if (duration == null) {
+    throw new MatchDataError('invalid', 'В данных нет корректной длительности матча.', matchId);
+  }
+
+  const sortedApi = [...apiPlayers.players].sort((a, b) => readCount(a.player_slot) - readCount(b.player_slot));
+  const players = sortedApi.map((apiPlayer) => {
+    const slot = readSlot(apiPlayer.player_slot) ?? 0;
+    return normalizePlayer(apiPlayer, parsedBySlot.get(slot) ?? null, slot);
   });
   const playersBySlot = new Map(players.map((p) => [p.slot, p]));
 
-  const duration = num(api.duration) || num(parsed?.duration);
   const parsedFlag = players.some((p) => p.isParsed);
 
   let goldAdv = arrayOfNumbers(parsed?.radiant_gold_adv ?? api.radiant_gold_adv);
@@ -543,37 +653,46 @@ export function normalizeMatch(inputs: unknown[]): Match {
     xpAdv = deriveAdvantage(players, duration, 'xpT');
   }
 
-  const teamfights = parseTeamfights(parsed?.teamfights ?? api.teamfights);
-  const objectives = parseObjectives(parsed?.objectives ?? api.objectives, playersBySlot);
+  const rawObjectives = parsed?.objectives !== undefined ? parsed.objectives : api.objectives;
+  const teamfights = parseTeamfights(parsed?.teamfights ?? api.teamfights, duration);
+  const objectives = parseObjectives(rawObjectives, playersBySlot, duration);
   const picksBans = parsePicksBans(api.picks_bans ?? parsed?.picks_bans, players);
 
   const radiantKills = players.filter((p) => p.isRadiant).reduce((a, p) => a + p.kills, 0);
   const direKills = players.filter((p) => !p.isRadiant).reduce((a, p) => a + p.kills, 0);
 
+  const coverage: MatchCoverage = {
+    timelines: players.some((p) => p.times.length > 1 && p.goldT.length > 1),
+    wards: parsed != null && players.some((p) => p.obsPlaced != null || p.senPlaced != null),
+    fights: teamfights.length > 0,
+    objectives: Array.isArray(rawObjectives),
+    purchases: players.some((p) => p.purchaseLog.length > 0),
+  };
+
   const warnings: string[] = [];
-  if (!parsedFlag) {
+  if (!coverage.timelines) {
     warnings.push('Матч не распарсен: таймлайны, варды и драки недоступны. Загрузи JSON парса для полного разбора.');
   }
   if (!players.some((player) => player.laneRole != null || player.lanePos)) {
     warnings.push('Нет разбивки по линиям: позиции определены по объёму фарма, линия не отображается.');
   }
-  if (!teamfights.length) {
+  if (!coverage.fights) {
     warnings.push('Нет данных о командных драках — часть выводов скрыта.');
   }
-
-  const matchId = num(api.match_id) || num(parsed?.match_id);
-  if (!matchId) throw new MatchDataError('invalid', 'В данных нет ID матча.');
+  if (!coverage.objectives) {
+    warnings.push('Нет списка событий матча: Рошан, башни и первая кровь не отображаются.');
+  }
 
   return {
     id: matchId,
-    startTime: num(api.start_time) || num(parsed?.start_time),
+    startTime: readCount(api.start_time) || readCount(parsed?.start_time),
     duration,
     radiantWin: Boolean(api.radiant_win ?? parsed?.radiant_win),
-    gameMode: num(api.game_mode),
-    lobbyType: num(api.lobby_type, 7),
+    gameMode: readCount(api.game_mode),
+    lobbyType: readCount(api.lobby_type, 7),
     region: numOrNull(api.region),
-    radiantScore: numOrNull(api.radiant_score) ?? radiantKills,
-    direScore: numOrNull(api.dire_score) ?? direKills,
+    radiantScore: readCountOrNull(api.radiant_score) ?? radiantKills,
+    direScore: readCountOrNull(api.dire_score) ?? direKills,
     firstBlood:
       numOrNull(api.first_blood_time) ??
       objectives.find((o) => o.kind === 'firstblood')?.time ??
@@ -586,20 +705,58 @@ export function normalizeMatch(inputs: unknown[]): Match {
     goldAdv,
     xpAdv,
     parsed: parsedFlag,
-    hasTimelines: players.some((p) => p.goldT.length > 1),
+    hasTimelines: coverage.timelines,
+    coverage,
     demo,
     warnings,
   };
 }
 
-export async function readJsonFiles(files: File[]): Promise<unknown[]> {
+interface ImportFile {
+  name?: string;
+  size?: number;
+  text?: () => Promise<string>;
+}
+
+/**
+ * Читает JSON из выбранных файлов.
+ * Размер проверяется до чтения, чтобы огромный файл не блокировал интерфейс.
+ */
+export async function readJsonFiles(files: ArrayLike<ImportFile> | null | undefined): Promise<unknown[]> {
+  const list: ImportFile[] = [];
+  const length = files?.length ?? 0;
+  for (let i = 0; i < length; i += 1) {
+    const file = (files as ArrayLike<ImportFile>)[i];
+    if (file) list.push(file);
+  }
+  if (!list.length) throw new MatchDataError('empty', 'Файлы не выбраны.');
+
+  let total = 0;
+  for (const file of list) {
+    checkFileSize(file, total);
+    total += typeof file.size === 'number' && Number.isFinite(file.size) ? file.size : 0;
+  }
+  if (total > LIMITS.maxTotalBytes) {
+    throw new MatchDataError(
+      'invalid',
+      `Слишком много данных за раз (лимит — ${Math.round(LIMITS.maxTotalBytes / 1024 / 1024)} МБ).`,
+    );
+  }
+
   const outputs: unknown[] = [];
-  for (const file of files) {
-    const text = await file.text();
+  for (const file of list) {
+    const name = file.name ?? 'файл';
+    let text: string;
+    try {
+      text = typeof file.text === 'function' ? await file.text() : '';
+    } catch {
+      throw new MatchDataError('invalid', `Файл «${name}» не удалось прочитать.`);
+    }
+    if (!text) throw new MatchDataError('invalid', `Файл «${name}» пустой.`);
     try {
       outputs.push(JSON.parse(text));
     } catch {
-      throw new MatchDataError('invalid', `Файл «${file.name}» не похож на JSON.`);
+      throw new MatchDataError('invalid', `Файл «${name}» не похож на JSON.`);
     }
   }
   return outputs;

@@ -1,0 +1,126 @@
+{
+  "result": {
+    "status": 1,
+    "num_results": 2,
+    "total_results": 500,
+    "results_remaining": 498,
+    "matches": [
+      {
+        "match_id": 7490235544,
+        "match_seq_num": 6123456789,
+        "start_time": 1690000000,
+        "lobby_type": 7,
+        "players": [
+          {
+            "account_id": 1000,
+            "player_slot": 0,
+            "hero_id": 54
+          },
+          {
+            "account_id": 4294967295,
+            "player_slot": 1,
+            "hero_id": 42
+          },
+          {
+            "account_id": 1002,
+            "player_slot": 2,
+            "hero_id": 7
+          },
+          {
+            "account_id": 4294967295,
+            "player_slot": 3,
+            "hero_id": 86
+          },
+          {
+            "account_id": 1004,
+            "player_slot": 4,
+            "hero_id": 30
+          },
+          {
+            "account_id": 4294967295,
+            "player_slot": 128,
+            "hero_id": 11
+          },
+          {
+            "account_id": 1006,
+            "player_slot": 129,
+            "hero_id": 25
+          },
+          {
+            "account_id": 4294967295,
+            "player_slot": 130,
+            "hero_id": 74
+          },
+          {
+            "account_id": 1008,
+            "player_slot": 131,
+            "hero_id": 19
+          },
+          {
+            "account_id": 4294967295,
+            "player_slot": 132,
+            "hero_id": 101
+          }
+        ]
+      },
+      {
+        "match_id": 7490235545,
+        "match_seq_num": 6123456790,
+        "start_time": 1690100000,
+        "lobby_type": 7,
+        "players": [
+          {
+            "account_id": 2000,
+            "player_slot": 0,
+            "hero_id": 54
+          },
+          {
+            "account_id": 4294967295,
+            "player_slot": 1,
+            "hero_id": 42
+          },
+          {
+            "account_id": 2002,
+            "player_slot": 2,
+            "hero_id": 7
+          },
+          {
+            "account_id": 4294967295,
+            "player_slot": 3,
+            "hero_id": 86
+          },
+          {
+            "account_id": 2004,
+            "player_slot": 4,
+            "hero_id": 30
+          },
+          {
+            "account_id": 4294967295,
+            "player_slot": 128,
+            "hero_id": 11
+          },
+          {
+            "account_id": 2006,
+            "player_slot": 129,
+            "hero_id": 25
+          },
+          {
+            "account_id": 4294967295,
+            "player_slot": 130,
+            "hero_id": 74
+          },
+          {
+            "account_id": 2008,
+            "player_slot": 131,
+            "hero_id": 19
+          },
+          {
+            "account_id": 4294967295,
+            "player_slot": 132,
+            "hero_id": 101
+          }
+        ]
+      }
+    ]
+  }
+}

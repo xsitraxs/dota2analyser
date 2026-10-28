@@ -71,20 +71,44 @@ function gradeOf(score: number | null): string {
   return 'E';
 }
 
-function valueAt(times: number[], values: number[], t: number): number | null {
-  if (!values.length) return null;
+/**
+ * Значение временного ряда в момент `t`.
+ *
+ * Возвращает null, если момент выходит за пределы покрытия данных: иначе
+ * последнее известное значение короткого или обрезанного матча выдавалось бы
+ * за честно измеренное на 10/20-й минуте и занижало оценку игрока.
+ *
+ * `tolerance` — допуск в секундах на последний отсчёт (ряд离散ен, а длительность
+ * матча обычно не кратна шагу выборки).
+ */
+function valueAt(times: number[], values: number[], t: number, tolerance = 60): number | null {
+  if (!values.length || t < 0) return null;
   if (!times.length) {
-    const index = clamp(Math.floor(t / 60), 0, values.length - 1);
+    const index = Math.floor(t / 60);
+    if (index < 0 || index > values.length - 1) return null;
     return values[index] ?? null;
   }
-  if (t < times[0]) return 0;
+  const length = Math.min(times.length, values.length);
+  const lastIndex = length - 1;
+  if (lastIndex < 0) return null;
+  if (t < times[0]) return null;
+  if (t > times[lastIndex] + tolerance) return null;
   let index = -1;
-  for (let i = 0; i < times.length; i += 1) {
+  for (let i = 0; i <= lastIndex; i += 1) {
     if (times[i] <= t) index = i;
     else break;
   }
-  if (index < 0) return 0;
-  return values[Math.min(index, values.length - 1)] ?? null;
+  if (index < 0) return null;
+  return values[index] ?? null;
+}
+
+/**
+ * Проверяет, что матч длился как минимум до `t` и точка покрыта таймлайном.
+ * Метрики за пределами покрытия не вычисляются вовсе.
+ */
+function coveredAt(duration: number, times: number[], values: number[], t: number): boolean {
+  if (duration < t) return false;
+  return valueAt(times, values, t) != null;
 }
 
 function laneCentroid(lanePos: Record<string, Record<string, number>> | null): { x: number; y: number } | null {
@@ -239,8 +263,10 @@ function computeGpmWindows(player: Player, durationMin: number): GpmWindow[] {
   for (const bound of bounds) {
     if (bound.from >= durationMin) continue;
     const to = Math.min(bound.to, durationMin);
-    const startGold = valueAt(player.times, player.goldT, bound.from * 60) ?? 0;
-    const endGold = valueAt(player.times, player.goldT, to * 60) ?? startGold;
+    const startGold = valueAt(player.times, player.goldT, bound.from * 60);
+    const endGold = valueAt(player.times, player.goldT, to * 60);
+    // Окно считается только если обе границы реально покрыты таймлайном.
+    if (startGold == null || endGold == null) continue;
     const minutes = Math.max(1, to - bound.from);
     windows.push({ label: bound.label, from: bound.from, to, gpm: Math.round((endGold - startGold) / minutes) });
   }
@@ -249,25 +275,52 @@ function computeGpmWindows(player: Player, durationMin: number): GpmWindow[] {
 
 interface DeathInfo {
   times: number[];
-  causes: string[];
+  /** Смерти, которые не удалось однозначно привязать к игроку (двойники героев). */
+  ambiguous: number;
 }
 
+/**
+ * Собирает времена смертей игрока из журналов убийств противников.
+ *
+ * Важно: kills_log хранит имя убитого героя, поэтому если в команде игрока
+ * два одинаковых героя, запись неоднозначна и в тайминг смертей не идёт.
+ * Лучше не знать точное время, чем приписать чужую смерть.
+ */
 function collectDeaths(match: Match, player: Player): DeathInfo {
   const hero = HERO_BY_ID[player.heroId];
-  if (!hero) return { times: [], causes: [] };
+  if (!hero) return { times: [], ambiguous: 0 };
+  const twins = match.players.filter((p) => p.isRadiant === player.isRadiant && p.heroId === player.heroId).length;
   const times: number[] = [];
-  for (const other of match.players) {
-    for (const kill of other.killsLog) {
-      if (kill.key === hero.name && kill.time >= 0) times.push(kill.time);
+  let ambiguous = 0;
+  for (const killer of match.players) {
+    if (killer.isRadiant === player.isRadiant) continue;
+    for (const kill of killer.killsLog) {
+      if (kill.key !== hero.name) continue;
+      if (kill.time < 0) continue;
+      if (twins > 1) {
+        ambiguous += 1;
+        continue;
+      }
+      times.push(kill.time);
     }
   }
   times.sort((a, b) => a - b);
-  return { times, causes: [] };
+  return { times, ambiguous };
 }
 
-function buildFights(match: Match, playerIndex: number, player: Player): FightParticipation[] {
+/**
+ * Участие игрока в драках.
+ *
+ * Индекс игрока в массиве драки берётся по слоту: порядок `teamfights[].players`
+ * совпадает с порядком слотов (0–4 Radiant, 128–132 Dire), а не с порядком
+ * в файле, поэтому сначала строим карту слот → индекс.
+ */
+function buildFights(match: Match, player: Player): FightParticipation[] {
+  const indexBySlot = new Map<number, number>();
+  match.players.forEach((candidate, index) => indexBySlot.set(candidate.slot, index));
+  const playerIndex = indexBySlot.get(player.slot) ?? -1;
   return match.teamfights.map((fight, index) => {
-    const fp = fight.players[playerIndex];
+    const fp = playerIndex >= 0 ? fight.players[playerIndex] : undefined;
     const teamDamage = sum(
       fight.players.filter((_, idx) => match.players[idx]?.isRadiant === player.isRadiant).map((p) => p.damage),
     );
@@ -297,25 +350,39 @@ function buildFights(match: Match, playerIndex: number, player: Player): FightPa
   });
 }
 
-function analyzePlayer(match: Match, player: Player, index: number, role: number): PlayerAnalysis {
+function analyzePlayer(match: Match, player: Player, role: number): PlayerAnalysis {
   const hero = HERO_BY_ID[player.heroId] ?? null;
   const durationMin = Math.max(1, match.duration / 60);
   const teamPlayers = match.players.filter((p) => p.isRadiant === player.isRadiant);
   const teamKills = sum(teamPlayers.map((p) => p.kills));
   const teamDamage = sum(teamPlayers.map((p) => p.heroDamage));
   const teamNetWorth = sum(teamPlayers.map((p) => p.netWorth));
-  const teamTowerDamage = sum(teamPlayers.map((p) => p.towerDamage));
-
   const timelineAvailable = player.times.length > 0 && player.goldT.length > 1;
-  const lh10 = timelineAvailable ? valueAt(player.times, player.lhT, 600) : null;
-  const lh20 = timelineAvailable ? valueAt(player.times, player.lhT, 1200) : null;
-  const gold10 = timelineAvailable ? valueAt(player.times, player.goldT, 600) : null;
-  const gold20 = timelineAvailable ? valueAt(player.times, player.goldT, 1200) : null;
-  const xp10 = timelineAvailable ? valueAt(player.times, player.xpT, 600) : null;
+  const hasWardData = player.obsPlaced != null || player.senPlaced != null;
+  const hasPurchaseData = player.purchaseLog.length > 0;
+  const durationSeconds = match.duration;
+
+  // Метрики на 10/20 минуте считаются только если матч дошёл до этой отметки
+  // и таймлайн действительно её покрывает.
+  const lh10 = timelineAvailable && coveredAt(durationSeconds, player.times, player.lhT, 600)
+    ? valueAt(player.times, player.lhT, 600)
+    : null;
+  const lh20 = timelineAvailable && coveredAt(durationSeconds, player.times, player.lhT, 1200)
+    ? valueAt(player.times, player.lhT, 1200)
+    : null;
+  const gold10 = timelineAvailable && coveredAt(durationSeconds, player.times, player.goldT, 600)
+    ? valueAt(player.times, player.goldT, 600)
+    : null;
+  const gold20 = timelineAvailable && coveredAt(durationSeconds, player.times, player.goldT, 1200)
+    ? valueAt(player.times, player.goldT, 1200)
+    : null;
+  const xp10 = timelineAvailable && coveredAt(durationSeconds, player.times, player.xpT, 600)
+    ? valueAt(player.times, player.xpT, 600)
+    : null;
 
   const deaths = collectDeaths(match, player);
   const earlyDeaths = deaths.times.filter((time) => time < 600).length;
-  const fights = buildFights(match, index, player);
+  const fights = buildFights(match, player);
   const fightCount = fights.length;
   const playedFights = fights.filter((f) => f.participated);
   const missedFights = fights.filter((f) => !f.participated && f.teamDamage > 0).length;
@@ -324,10 +391,13 @@ function analyzePlayer(match: Match, player: Player, index: number, role: number
   const fightInvolvement = fightCount ? playedFights.length / fightCount : 0;
   const killParticipation = teamKills > 0 ? Math.min(1, (player.kills + player.assists) / teamKills) : 0;
 
-  const obsPlaced = player.obsPlaced || player.obsLog.length;
-  const senPlaced = player.senPlaced || player.senLog.length;
-  const wardsPer10 = ((obsPlaced + senPlaced * 0.65) / durationMin) * 10;
-  const senPer10 = (senPlaced / durationMin) * 10;
+  const obsPlaced = player.obsPlaced ?? (player.obsLog.length ? player.obsLog.length : null);
+  const senPlaced = player.senPlaced ?? (player.senLog.length ? player.senLog.length : null);
+  const wardsPer10 =
+    obsPlaced != null || senPlaced != null
+      ? (((obsPlaced ?? 0) + (senPlaced ?? 0) * 0.65) / durationMin) * 10
+      : null;
+  const senPer10 = senPlaced != null ? (senPlaced / durationMin) * 10 : null;
 
   const metrics: PlayerMetrics = {
     durationMin,
@@ -368,7 +438,6 @@ function analyzePlayer(match: Match, player: Player, index: number, role: number
   };
 
   const isCore = role <= 3;
-  const parsedData = player.isParsed;
   const farmComps = isCore
     ? [
         { score: ratioScore(metrics.lh10, GOALS.lh10[role as 1 | 2 | 3]), weight: 0.32 },
@@ -376,13 +445,13 @@ function analyzePlayer(match: Match, player: Player, index: number, role: number
         { score: ratioScore(metrics.lhPerMin, GOALS.lhPerMin[role as 1 | 2 | 3]), weight: 0.2 },
         { score: ratioScore(metrics.gpm, GOALS.gpm[role as 1 | 2 | 3]), weight: 0.3 },
       ]
-    : parsedData
-      ? [
-          { score: ratioScore(metrics.gpm, GOALS.gpm[role as 4 | 5]), weight: 0.5 },
-          { score: ratioScore(metrics.campsStacked, GOALS.stacks[role as 4 | 5]), weight: 0.25 },
-          { score: ratioScore(metrics.runePickups, GOALS.runes[role as 4 | 5]), weight: 0.25 },
-        ]
-      : [{ score: ratioScore(metrics.gpm, GOALS.gpm[role as 4 | 5]), weight: 1 }];
+    : [
+        // campsStacked / runePickups приходят только из парса; если их нет,
+        // компоненты просто исключаются из веса, а не считаются нулевыми.
+        { score: ratioScore(metrics.gpm, GOALS.gpm[role as 4 | 5]), weight: 0.5 },
+        { score: ratioScore(metrics.campsStacked, GOALS.stacks[role as 4 | 5]), weight: 0.25 },
+        { score: ratioScore(metrics.runePickups, GOALS.runes[role as 4 | 5]), weight: 0.25 },
+      ];
 
   const damageComps = [
     { score: ratioScore(metrics.damagePerMin, GOALS.damagePerMin[role as 1 | 2 | 3 | 4 | 5]), weight: 0.7 },
@@ -420,7 +489,9 @@ function analyzePlayer(match: Match, player: Player, index: number, role: number
     farm: weighted(farmComps),
     damage: weighted(damageComps),
     survival: survivalScore,
-    vision: parsedData ? weighted(visionComps) : null,
+    // Вижн оценивается только когда данные о вардах реально есть:
+    // отсутствие источника — не повод ставить ноль.
+    vision: hasWardData ? weighted(visionComps) : null,
     fights: weighted(fightsComps),
     objectives: weighted(objectivesComps),
   };
@@ -441,8 +512,9 @@ function analyzePlayer(match: Match, player: Player, index: number, role: number
     ...player.obsLog.map((point) => ({ ...point, kind: 'obs' as const })),
     ...player.senLog.map((point) => ({ ...point, kind: 'sen' as const })),
   ].sort((a, b) => a.time - b.time);
+  const deathIndex = match.players.findIndex((candidate) => candidate.slot === player.slot);
   const deathPoints = match.teamfights.flatMap((fight) =>
-    (fight.players[index]?.deathsPos ?? []).map((point) => ({ ...point, time: fight.start })),
+    (fight.players[deathIndex]?.deathsPos ?? []).map((point) => ({ ...point, time: fight.start })),
   );
 
   const all = match.players;
@@ -454,7 +526,7 @@ function analyzePlayer(match: Match, player: Player, index: number, role: number
     kills: rankOf(player.kills, all.map((p) => p.kills)),
     deaths: rankOf(player.deaths, all.map((p) => p.deaths), false),
     assists: rankOf(player.assists, all.map((p) => p.assists)),
-    wards: rankOf(obsPlaced + senPlaced, all.map((p) => (p.obsPlaced || 0) + (p.senPlaced || 0))),
+    wards: rankOf((obsPlaced ?? 0) + (senPlaced ?? 0), all.map((p) => (p.obsPlaced ?? 0) + (p.senPlaced ?? 0))),
     towerDamage: rankOf(player.towerDamage, all.map((p) => p.towerDamage)),
   };
 
@@ -477,6 +549,11 @@ function analyzePlayer(match: Match, player: Player, index: number, role: number
     bkbTiming: bkb ? bkb.time : null,
     blinkTiming: blink ? blink.time : null,
     hasTimeline: timelineAvailable,
+    coverage: {
+      timelines: timelineAvailable,
+      wards: hasWardData,
+      purchases: hasPurchaseData,
+    },
   };
 }
 
@@ -492,8 +569,10 @@ function buildTeamSummary(
 ): TeamSummary {
   const roster = players.filter((p) => p.player.isRadiant === (side === 'radiant')).map((p) => p.player);
   const objectives = match.objectives;
+  const hasObjectives = match.coverage?.objectives ?? match.parsed;
   const towers = objectives.filter((o) => o.kind === 'tower' && o.team === side).length;
-  const roshans = objectives.filter((o) => o.kind === 'roshan' && o.team === side).length;
+  // Без списка событий количество Рошанов неизвестно, а не равно нулю.
+  const roshans = hasObjectives ? objectives.filter((o) => o.kind === 'roshan' && o.team === side).length : null;
   const fightsWon = match.teamfights.filter((f) => f.winner === side).length;
   const scoreValues = players
     .filter((p) => p.player.isRadiant === (side === 'radiant'))
@@ -509,7 +588,9 @@ function buildTeamSummary(
     towers,
     roshans,
     fightsWon,
-    wards: roster.reduce((acc, p) => acc + (p.obsPlaced || 0) + (p.senPlaced || 0), 0),
+    wards: match.coverage?.wards
+      ? roster.reduce((acc, p) => acc + (p.obsPlaced ?? 0) + (p.senPlaced ?? 0), 0)
+      : null,
     gpm: roster.length ? Math.round(roster.reduce((acc, p) => acc + p.gpm, 0) / roster.length) : 0,
     avgScore: scoreValues.length
       ? Math.round(scoreValues.reduce((acc, v) => acc + v, 0) / scoreValues.length)
@@ -524,8 +605,8 @@ export function analyzeMatch(match: Match): MatchAnalysis {
   for (const [slot, role] of radiantRoles) roleBySlot.set(slot, role);
   for (const [slot, role] of direRoles) roleBySlot.set(slot, role);
 
-  const players = match.players.map((player, index) =>
-    analyzePlayer(match, player, index, roleBySlot.get(player.slot) ?? 1),
+  const players = match.players.map((player) =>
+    analyzePlayer(match, player, roleBySlot.get(player.slot) ?? 1),
   );
   const bySlot: Record<number, PlayerAnalysis> = {};
   for (const analysis of players) bySlot[analysis.player.slot] = analysis;

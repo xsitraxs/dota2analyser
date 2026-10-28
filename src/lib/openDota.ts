@@ -1,15 +1,27 @@
+import { checkApiBaseUrl } from './validate';
+import { RequestAbortError, DEFAULT_TIMEOUT_MS, fetchWithTimeout, readJsonBody } from './request';
+
 export const OPEN_DOTA_BASE = 'https://api.opendota.com/api';
 
 function normalizeBase(base?: string): string {
   const value = (base ?? '').trim();
   if (!value) return OPEN_DOTA_BASE;
-  return value.replace(/\/+$/, '');
+  const check = checkApiBaseUrl(value);
+  if (!check.ok) return value.replace(/\/+$/, '');
+  return check.value;
 }
+
+/** Проверяет пользовательский базовый URL и возвращает ошибку для интерфейса. */
+export function checkBaseUrl(base?: string): { ok: boolean; error?: string } {
+  return checkApiBaseUrl(base ?? '');
+}
+
+export type ApiErrorCode = 'rate' | 'notfound' | 'network' | 'server' | 'parse' | 'proxy' | 'abort';
 
 export class ApiError extends Error {
   status: number;
-  code: 'rate' | 'notfound' | 'network' | 'server' | 'parse';
-  constructor(status: number, code: ApiError['code'], message: string) {
+  code: ApiErrorCode;
+  constructor(status: number, code: ApiErrorCode, message: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
@@ -23,54 +35,90 @@ interface FetchOptions {
   method?: 'GET' | 'POST';
   body?: unknown;
   baseUrl?: string;
+  timeoutMs?: number;
 }
 
 async function request<T>(path: string, options: FetchOptions = {}): Promise<T> {
-  const url = new URL(`${normalizeBase(options.baseUrl)}${path}`);
-  if (options.apiKey) url.searchParams.set('api_key', options.apiKey);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20000);
-  if (options.signal) {
-    options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+  const base = normalizeBase(options.baseUrl);
+  if (options.baseUrl && options.baseUrl.trim() && !checkApiBaseUrl(options.baseUrl).ok) {
+    throw new ApiError(
+      0,
+      'proxy',
+      `Некорректный адрес прокси: ${checkApiBaseUrl(options.baseUrl).error ?? 'проверь формат'}`,
+    );
   }
+  const url = new URL(`${base}${path}`);
+  if (options.apiKey) url.searchParams.set('api_key', options.apiKey);
+
+  let response: Response;
   try {
-    const response = await fetch(url.toString(), {
+    response = await fetchWithTimeout(url.toString(), {
       method: options.method ?? 'GET',
       headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
-      body: options.body ? JSON.stringify(options.body) : undefined,
-      signal: controller.signal,
+      body: options.body,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
-    if (response.status === 429) {
-      throw new ApiError(429, 'rate', 'OpenDota ограничил частоту запросов. Подожди минуту или добавь API-ключ в настройках.');
-    }
-    if (response.status === 404) {
-      throw new ApiError(404, 'notfound', 'OpenDota не нашёл такие данные.');
-    }
-    if (!response.ok) {
-      throw new ApiError(response.status, 'server', `OpenDota ответил ошибкой ${response.status}. Попробуй позже.`);
-    }
-    try {
-      return (await response.json()) as T;
-    } catch {
-      throw new ApiError(response.status, 'parse', 'Не удалось прочитать ответ OpenDota.');
-    }
   } catch (error) {
-    if (error instanceof ApiError) throw error;
-    if ((error as Error).name === 'AbortError') {
-      throw new ApiError(0, 'network', 'Запрос к OpenDota занял слишком много времени. Проверь соединение.');
+    if (error instanceof RequestAbortError) {
+      throw error.reason === 'timeout'
+        ? new ApiError(0, 'network', 'Запрос к OpenDota занял слишком много времени. Проверь соединение.')
+        : new ApiError(0, 'abort', 'Запрос к OpenDota отменён.');
     }
     throw new ApiError(0, 'network', 'Не удалось связаться с OpenDota. Проверь интернет или загрузи JSON вручную.');
-  } finally {
-    clearTimeout(timer);
+  }
+
+  if (response.status === 429) {
+    throw new ApiError(429, 'rate', 'OpenDota ограничил частоту запросов. Подожди минуту или добавь API-ключ в настройках.');
+  }
+  if (response.status === 404) {
+    throw new ApiError(404, 'notfound', 'OpenDota не нашёл такие данные.');
+  }
+  if (!response.ok) {
+    throw new ApiError(response.status, 'server', `OpenDota ответил ошибкой ${response.status}. Попробуй позже.`);
+  }
+
+  try {
+    return (await readJsonBody(response)) as T;
+  } catch {
+    throw new ApiError(response.status, 'parse', 'Не удалось прочитать ответ OpenDota.');
   }
 }
 
-export interface PlayerProfile {
-  account_id: number;
-  personaname: string | null;
-  avatarfull?: string | null;
+/**
+ * Профиль игрока OpenDota.
+ *
+ * Контракт `/players/:account_id`: `rank_tier` и `leaderboard_rank` лежат
+ * в корне, а имя и аватар — внутри вложенного объекта `profile`.
+ * Раньше код читал personaname/avatarfull из корня, поэтому имя не показывалось.
+ */
+export interface PlayerProfileEnvelope {
+  account_id?: number;
   rank_tier?: number | null;
   leaderboard_rank?: number | null;
+  solo_competitive_rank?: number | null;
+  competitive_rank?: number | string | null;
+  mmr_estimate?: { estimate?: number } | null;
+  profile?: {
+    account_id?: number;
+    personaname?: string | null;
+    name?: string | null;
+    avatarfull?: string | null;
+    avatarmedium?: string | null;
+    avatar?: string | null;
+    profileurl?: string | null;
+    plus?: boolean;
+  } | null;
+  /** Плоская форма (встречается у зеркал): имя и аватар в корне. */
+  personaname?: string | null;
+  avatarfull?: string | null;
+}
+
+export interface PlayerProfile {
+  accountId: number;
+  name: string | null;
+  avatar: string | null;
+  rankTier: number | null;
 }
 
 export interface PlayerSearchResult {
@@ -82,18 +130,31 @@ export interface PlayerSearchResult {
 
 export interface RecentMatch {
   match_id: number;
-  player_slot: number;
-  radiant_win: boolean;
-  duration: number;
-  game_mode: number;
-  lobby_type?: number;
-  hero_id: number;
+  /** null — участник не найден (например, скрытый аккаунт). */
+  player_slot: number | null;
+  /** null — результат неизвестен (источник его не отдал). */
+  radiant_win: boolean | null;
+  duration: number | null;
+  game_mode: number | null;
+  lobby_type?: number | null;
+  hero_id: number | null;
   start_time: number;
-  kills: number;
-  deaths: number;
-  assists: number;
+  kills: number | null;
+  deaths: number | null;
+  assists: number | null;
   average_rank?: number | null;
   party_size?: number | null;
+  /** true, если KDA/длительность/результат реально получены. */
+  hasDetails: boolean;
+}
+
+/** Приводит ответ /players/:id к виду, с которым работает интерфейс. */
+export function toPlayerProfile(accountId: number, envelope: PlayerProfileEnvelope | null): PlayerProfile {
+  const profile = envelope?.profile ?? null;
+  const name = profile?.personaname ?? profile?.name ?? envelope?.personaname ?? null;
+  const avatar = profile?.avatarfull ?? envelope?.avatarfull ?? null;
+  const rankTier = envelope?.rank_tier ?? null;
+  return { accountId, name: name || null, avatar: avatar || null, rankTier: rankTier ?? null };
 }
 
 export async function fetchMatch(
@@ -102,7 +163,11 @@ export async function fetchMatch(
   signal?: AbortSignal,
   baseUrl?: string,
 ): Promise<unknown> {
-  return request(`/matches/${matchId}`, { apiKey, signal, baseUrl });
+  const data = await request<unknown>(`/matches/${matchId}`, { apiKey, signal, baseUrl });
+  if (typeof data !== 'object' || data === null) {
+    throw new ApiError(200, 'parse', 'OpenDota вернула неожиданный ответ вместо матча.');
+  }
+  return data;
 }
 
 export async function searchPlayers(
@@ -111,7 +176,12 @@ export async function searchPlayers(
   signal?: AbortSignal,
   baseUrl?: string,
 ): Promise<PlayerSearchResult[]> {
-  return request(`/search?q=${encodeURIComponent(query.trim())}`, { apiKey, signal, baseUrl });
+  const data = await request<unknown>(`/search?q=${encodeURIComponent(query.trim())}`, {
+    apiKey,
+    signal,
+    baseUrl,
+  });
+  return Array.isArray(data) ? (data as PlayerSearchResult[]) : [];
 }
 
 export async function fetchPlayer(
@@ -119,8 +189,8 @@ export async function fetchPlayer(
   apiKey?: string,
   signal?: AbortSignal,
   baseUrl?: string,
-): Promise<PlayerProfile> {
-  return request(`/players/${accountId}`, { apiKey, signal, baseUrl });
+): Promise<PlayerProfileEnvelope> {
+  return request<PlayerProfileEnvelope>(`/players/${accountId}`, { apiKey, signal, baseUrl });
 }
 
 export async function fetchRecentMatches(
@@ -130,7 +200,13 @@ export async function fetchRecentMatches(
   limit = 20,
   baseUrl?: string,
 ): Promise<RecentMatch[]> {
-  return request(`/players/${accountId}/matches?limit=${limit}`, { apiKey, signal, baseUrl });
+  const data = await request<unknown>(`/players/${accountId}/matches?limit=${limit}`, {
+    apiKey,
+    signal,
+    baseUrl,
+  });
+  if (!Array.isArray(data)) return [];
+  return data.filter((item): item is RecentMatch => typeof item === 'object' && item != null && 'match_id' in item);
 }
 
 export async function requestParse(

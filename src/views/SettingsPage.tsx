@@ -16,8 +16,8 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useApp } from '../lib/app-context';
-import { parseAccountInput, rankLabel, type PlayerProfile } from '../lib/openDota';
-import { fetchProfile, fetchRawMatch, PROVIDERS, providerProblem } from '../lib/dataSource';
+import { parseAccountInput, rankLabel } from '../lib/openDota';
+import { fetchProfile, fetchRawMatch, PROVIDERS, providerProblem, type ProfileView } from '../lib/dataSource';
 import { toAppError } from '../lib/errors';
 import { normalizeMatch } from '../lib/normalize';
 import { Toggle } from '../components/ui';
@@ -36,7 +36,7 @@ export default function SettingsPage() {
   const [accountInput, setAccountInput] = useState(settings.accountId ? String(settings.accountId) : '');
   const [testMatch, setTestMatch] = useState('7490235544');
   const [testing, setTesting] = useState(false);
-  const [profile, setProfile] = useState<PlayerProfile | null>(null);
+  const [profile, setProfile] = useState<ProfileView | null>(null);
   const [checkingProfile, setCheckingProfile] = useState(false);
   const [showSteamKey, setShowSteamKey] = useState(false);
 
@@ -63,11 +63,7 @@ export default function SettingsPage() {
     setCheckingProfile(true);
     try {
       const next = await fetchProfile(accountId, settings);
-      setProfile({
-        account_id: next.accountId,
-        personaname: next.name,
-        rank_tier: next.rankTier,
-      });
+      setProfile(next);
     } catch {
       setProfile(null);
     } finally {
@@ -326,10 +322,10 @@ export default function SettingsPage() {
               </div>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[12px] font-semibold text-white">
-                  {profile?.personaname || settings.playerName || `Аккаунт ${settings.accountId}`}
+                  {profile?.name || settings.playerName || `Аккаунт ${settings.accountId}`}
                 </div>
                 <div className="mt-0.5 text-[9.5px] text-ink-400">
-                  {profile?.rank_tier ? rankLabel(profile.rank_tier) : 'профиль сохранён'} · ID {settings.accountId}
+                  {profile?.rankTier ? rankLabel(profile.rankTier) : 'профиль сохранён'} · ID {settings.accountId}
                 </div>
               </div>
               <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-radiant">

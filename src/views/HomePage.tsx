@@ -535,9 +535,9 @@ function MyMatchesPanel() {
         matches.length > 0 && (
           <div className="mt-3 space-y-1.5">
             {matches.map((recent) => {
-              const hero = HERO_BY_ID[recent.hero_id];
-              const isRadiant = recent.player_slot < 128;
-              const won = isRadiant === recent.radiant_win;
+              const hero = recent.hero_id != null ? HERO_BY_ID[recent.hero_id] : null;
+              const isRadiant = recent.player_slot != null ? recent.player_slot < 128 : null;
+              const won = isRadiant != null && recent.radiant_win != null ? isRadiant === recent.radiant_win : null;
               return (
                 <button
                   key={recent.match_id}
@@ -545,26 +545,29 @@ function MyMatchesPanel() {
                   onClick={() => navigate(matchPath(recent.match_id, 'overview'))}
                   className="group flex w-full items-center gap-3 rounded-xl border border-transparent px-2 py-2 text-left transition hover:border-white/[0.07] hover:bg-white/[0.03]"
                 >
-                  <HeroAvatar hero={hero ?? null} size={34} side={isRadiant ? 'radiant' : 'dire'} />
+                  <HeroAvatar hero={hero ?? null} size={34} side={isRadiant === false ? 'dire' : 'radiant'} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <span className="truncate text-[12px] font-semibold text-white">{hero?.localized_name ?? 'Герой'}</span>
                       <span
                         className="text-[9px] font-bold uppercase"
-                        style={{ color: won ? SIDE_COLOR.radiant : SIDE_COLOR.dire }}
+                        style={{ color: won == null ? '#64756E' : won ? SIDE_COLOR.radiant : SIDE_COLOR.dire }}
                       >
-                        {won ? 'W' : 'L'}
+                        {won == null ? '?' : won ? 'W' : 'L'}
                       </span>
                     </div>
                     <div className="mt-0.5 text-[9.5px] text-ink-500">
-                      {GAME_MODE_LABEL(recent.game_mode)} · {fmtDate(recent.start_time)}
+                      {recent.game_mode != null ? GAME_MODE_LABEL(recent.game_mode) : 'режим неизвестен'} ·{' '}
+                      {recent.start_time ? fmtDate(recent.start_time) : 'дата неизвестна'}
                     </div>
                   </div>
                   <div className="text-right">
                     <div className="text-[11px] font-semibold text-ink-200">
-                      {recent.kills} / {recent.deaths} / {recent.assists}
+                      {recent.hasDetails ? `${recent.kills} / ${recent.deaths} / ${recent.assists}` : '—'}
                     </div>
-                    <div className="mt-0.5 text-[9px] text-ink-500">{fmtTime(recent.duration)}</div>
+                    <div className="mt-0.5 text-[9px] text-ink-500">
+                      {recent.duration != null ? fmtTime(recent.duration) : 'длительность неизвестна'}
+                    </div>
                   </div>
                   <ChevronRight size={14} className="text-ink-500 transition group-hover:translate-x-0.5 group-hover:text-lime" />
                 </button>

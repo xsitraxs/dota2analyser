@@ -1,0 +1,18 @@
+{
+  "response": {
+    "players": [
+      {
+        "steamid": "76561197960266728",
+        "personaname": "Radiant Core",
+        "avatarfull": "https://example.com/a1.jpg",
+        "profileurl": "https://steamcommunity.com/id/a1"
+      },
+      {
+        "steamid": "76561197960266730",
+        "personaname": "Radiant Mid",
+        "avatarfull": "https://example.com/a2.jpg",
+        "profileurl": "https://steamcommunity.com/id/a2"
+      }
+    ]
+  }
+}

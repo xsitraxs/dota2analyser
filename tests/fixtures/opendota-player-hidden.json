@@ -1,0 +1,16 @@
+{
+  "tracked_until": null,
+  "solo_competitive_rank": null,
+  "competitive_rank": null,
+  "rank_tier": null,
+  "leaderboard_rank": null,
+  "mmr_estimate": {
+    "estimate": 1200
+  },
+  "profile": {
+    "account_id": 1001,
+    "personaname": null,
+    "avatarfull": null,
+    "plus": false
+  }
+}

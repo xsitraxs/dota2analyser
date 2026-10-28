@@ -35,11 +35,20 @@ function metricSentence(analysis: PlayerAnalysis, dimension: Dimension): string 
     case 'survival':
       return `${analysis.player.deaths} ${plural(analysis.player.deaths, 'смерть', 'смерти', 'смертей')} за ${fmtTime(m.durationMin * 60)}`;
     case 'vision':
-      return `${m.obsPlaced} ${plural(m.obsPlaced, 'обс', 'обса', 'обсов')} + ${m.senPlaced} ${plural(m.senPlaced, 'сентари', 'сентари', 'сентарей')}`;
+      return m.wardsPer10 == null
+        ? 'нет данных о вардах'
+        : `${m.obsPlaced ?? 0} ${plural(m.obsPlaced ?? 0, 'обс', 'обса', 'обсов')} + ${m.senPlaced ?? 0} ${plural(
+            m.senPlaced ?? 0,
+            'сентари',
+            'сентари',
+            'сентарей',
+          )} — ${m.wardsPer10.toFixed(2)}/10 мин`;
     case 'fights':
       return `${fmtPct(m.killParticipation)} участие, ${fmtPct(m.fightInvolvement)} драк`;
     case 'objectives':
-      return `${fmtNum(analysis.player.towerDamage)} урона по строениям, ${m.roshansKilled} Рошан`;
+      return `${fmtNum(analysis.player.towerDamage)} урона по строениям${
+        m.roshansKilled == null ? '' : `, ${m.roshansKilled} Рошан`
+      }`;
     default:
       return '';
   }
@@ -300,58 +309,65 @@ export function buildCoachReport(match: Match, analysis: MatchAnalysis, slot: nu
   }
 
   // ---------- Видение ----------
-  const hasVisionData = playerAnalysis.hasTimeline;
-  if (hasVisionData && !isCore && m.wardsPer10 < visionGoal * 0.7) {
+  // Раньше здесь проверялся общий флаг «матч распарсен», но варды приходят
+  // отдельным блоком данных: без него выводы о вижне не формулируем вовсе.
+  const hasVisionData = playerAnalysis.coverage?.wards ?? false;
+  const wardsPer10 = m.wardsPer10;
+  const obsPlaced = m.obsPlaced ?? 0;
+  const senPlaced = m.senPlaced ?? 0;
+  if (hasVisionData && !isCore && wardsPer10 != null && wardsPer10 < visionGoal * 0.7) {
     add({
       id: 'vision-low',
-      severity: m.wardsPer10 < visionGoal * 0.4 ? 'critical' : 'warning',
+      severity: (wardsPer10 ?? 0) < visionGoal * 0.4 ? 'critical' : 'warning',
       category: 'vision',
       title: 'Мало вардов для поддержки',
-      detail: `${m.obsPlaced} обсов и ${m.senPlaced} сентарей за ${fmtTime(match.duration)} — ${m.wardsPer10.toFixed(2)} варда/10 мин. Для позиции ${role} ориентир — ${visionGoal.toFixed(2)}.`,
+      detail: `${obsPlaced} обсов и ${senPlaced} сентарей за ${fmtTime(match.duration)} — ${wardsPer10.toFixed(
+        2,
+      )} варда/10 мин. Для позиции ${role} ориентир — ${visionGoal.toFixed(2)}.`,
       why: 'Вижн — это информация: где враг, можно ли фармить линию, где начнётся драка. Без вардов команда играет вслепую.',
       fix: 'Держи 2 обса на карте всё время. Перед сменой зоны ставь новый вард до того, как старый закончится. Не экономь на вардах в мид-гейме.',
       lessonIds: ['vision', 'map-awareness'],
-      value: m.wardsPer10.toFixed(2),
+      value: wardsPer10.toFixed(2),
       goal: visionGoal.toFixed(2),
     });
-  } else if (hasVisionData && !isCore && m.wardsPer10 >= visionGoal) {
+  } else if (hasVisionData && !isCore && wardsPer10 != null && wardsPer10 >= visionGoal) {
     add({
       id: 'vision-good',
       severity: 'good',
       category: 'vision',
       title: 'Карта под контролем',
-      detail: `${m.obsPlaced} обсов и ${m.senPlaced} сентарей — ${m.wardsPer10.toFixed(2)} варда/10 мин против ориентира ${visionGoal.toFixed(2)}.`,
+      detail: `${obsPlaced} обсов и ${senPlaced} сентарей — ${wardsPer10.toFixed(2)} варда/10 мин против ориентира ${visionGoal.toFixed(2)}.`,
       why: 'Хороший вижн напрямую конвертируется в безопасный фарм керри и успешные драки.',
       fix: 'Добавь девар: если видишь вражеский обс, снимай его сентари или кволингом. Контроль вижна важнее количества.',
       lessonIds: ['vision'],
     });
   }
 
-  if (hasVisionData && !isCore && m.senPlaced === 0 && m.obsPlaced >= 3) {
+  if (hasVisionData && !isCore && senPlaced === 0 && obsPlaced >= 3) {
     add({
       id: 'vision-sentry',
       severity: 'warning',
       category: 'vision',
       title: 'Ни одной сентари',
-      detail: `Ты поставил ${m.obsPlaced} обсов, но ни разу не купил сентари. Вражеские варды остаются безнаказанными.`,
+      detail: `Ты поставил ${obsPlaced} обсов, но ни разу не купил сентари. Вражеские варды остаются безнаказанными.`,
       why: 'Сентари — это не только девар. Она отключает вражеский вижн и защищает твои ротации. Без неё ты видишь карту, а враг видит тебя.',
       fix: 'Покупай сентари под каждый обс в важной зоне и перед Рошаном/пушами. Одна снятая сентари окупает себя.',
       lessonIds: ['vision'],
     });
-  } else if (hasVisionData && !isCore && m.senPlaced > 0 && m.senPlaced < senGoal * durationMin / 10) {
+  } else if (hasVisionData && !isCore && senPlaced > 0 && senPlaced < (senGoal * durationMin) / 10) {
     add({
       id: 'vision-sentry-low',
       severity: 'info',
       category: 'vision',
       title: 'Сентарей меньше нормы',
-      detail: `${m.senPlaced} сентарей за матч при ориентире ${Math.max(1, Math.round((senGoal * durationMin) / 10))}.`,
+      detail: `${senPlaced} сентарей за матч при ориентире ${Math.max(1, Math.round((senGoal * durationMin) / 10))}.`,
       why: 'Без регулярных сентарей ты не контролируешь вражеский вижн и не можешь безопасно ходить через реку.',
       fix: 'Добавь сентари в закупку перед каждой ротацией и приходом на Рошана. Не обязательно ставить их в одном месте.',
       lessonIds: ['vision'],
     });
   }
 
-  if (hasVisionData && isCore && m.obsPlaced === 0 && durationMin > 25) {
+  if (hasVisionData && isCore && obsPlaced === 0 && durationMin > 25) {
     add({
       id: 'vision-core-zero',
       severity: 'info',
@@ -392,7 +408,8 @@ export function buildCoachReport(match: Match, analysis: MatchAnalysis, slot: nu
   }
 
   const tpUses = player.itemUses.tpscroll ?? player.purchaseLog.filter((entry) => entry.key === 'tpscroll').length;
-  if (playerAnalysis.hasTimeline && durationMin > 20 && tpUses < 3) {
+  const hasPurchaseData = playerAnalysis.coverage?.purchases ?? false;
+  if (hasPurchaseData && durationMin > 20 && tpUses < 3) {
     add({
       id: 'items-tp',
       severity: 'warning',
@@ -434,10 +451,12 @@ export function buildCoachReport(match: Match, analysis: MatchAnalysis, slot: nu
     });
   }
 
+  const hasObjectivesData = match.coverage?.objectives ?? match.parsed;
   const teamRoshans = match.objectives.filter(
     (objective) => objective.kind === 'roshan' && objective.team === (player.isRadiant ? 'radiant' : 'dire'),
   ).length;
-  if (match.parsed && durationMin > 28 && teamRoshans === 0) {
+  // Без списка событий матча отсутствие Рошана — не факт, а отсутствие данных.
+  if (hasObjectivesData && durationMin > 28 && teamRoshans === 0) {
     add({
       id: 'objectives-roshan',
       severity: 'info',
@@ -451,6 +470,19 @@ export function buildCoachReport(match: Match, analysis: MatchAnalysis, slot: nu
   }
 
   // ---------- Итог / контекст ----------
+  if (!match.coverage?.objectives && match.parsed) {
+    add({
+      id: 'meta-no-objectives',
+      severity: 'info',
+      category: 'objectives',
+      title: 'Нет списка событий матча',
+      detail: 'В данных нет журнала событий, поэтому Рошан, башни и первая кровь не показаны — это не значит, что их не было.',
+      why: 'Выводы об объектах можно делать только по фактическому списку событий, а не по его отсутствию.',
+      fix: 'Загрузи полный парс реплея (JSON парса или OpenDota с парсом), чтобы увидеть объекты.',
+      lessonIds: ['objectives'],
+    });
+  }
+
   if (!playerAnalysis.hasTimeline) {
     add({
       id: 'meta-unparsed',

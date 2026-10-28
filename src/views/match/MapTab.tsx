@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Eye, MapPin, Skull, Sparkles } from 'lucide-react';
 import { DIMENSION_META } from '../../lib/constants';
-import { fmtTime } from '../../lib/format';
+import { fmtNum, fmtTime } from '../../lib/format';
 import type { MatchAnalysis, PlayerAnalysis, WardPoint } from '../../types';
 import { DotaMap } from '../../components/DotaMap';
 import { HeroAvatar, SIDE_COLOR, Toggle } from '../../components/ui';
@@ -93,7 +93,9 @@ export function MapTab({ analysis }: { analysis: MatchAnalysis; match?: unknown 
 
   if (!selected) return null;
   const hasLane = Boolean(selected.player.lanePos);
-  const hasWards = selected.metrics.obsPlaced + selected.metrics.senPlaced > 0 || selected.wardPoints.length > 0;
+  const hasWards =
+    (selected.metrics.obsPlaced ?? 0) + (selected.metrics.senPlaced ?? 0) > 0 || selected.wardPoints.length > 0;
+  const anyWardData = analysis.players.some((item) => item.coverage?.wards);
 
   return (
     <div className="space-y-4">
@@ -168,19 +170,19 @@ export function MapTab({ analysis }: { analysis: MatchAnalysis; match?: unknown 
               <div className="mt-3 grid grid-cols-2 gap-2 text-[9.5px]">
                 <div className="rounded-lg bg-white/[0.03] px-2 py-1.5">
                   <div className="text-[8px] uppercase tracking-wider text-ink-500">Обсы</div>
-                  <div className="mt-0.5 text-[11px] font-semibold text-white">{selected.metrics.obsPlaced}</div>
+                  <div className="mt-0.5 text-[11px] font-semibold text-white">{fmtNum(selected.metrics.obsPlaced)}</div>
                 </div>
                 <div className="rounded-lg bg-white/[0.03] px-2 py-1.5">
                   <div className="text-[8px] uppercase tracking-wider text-ink-500">Сентари</div>
-                  <div className="mt-0.5 text-[11px] font-semibold text-white">{selected.metrics.senPlaced}</div>
+                  <div className="mt-0.5 text-[11px] font-semibold text-white">{fmtNum(selected.metrics.senPlaced)}</div>
                 </div>
                 <div className="rounded-lg bg-white/[0.03] px-2 py-1.5">
                   <div className="text-[8px] uppercase tracking-wider text-ink-500">Стеки</div>
-                  <div className="mt-0.5 text-[11px] font-semibold text-white">{selected.metrics.campsStacked}</div>
+                  <div className="mt-0.5 text-[11px] font-semibold text-white">{fmtNum(selected.metrics.campsStacked)}</div>
                 </div>
                 <div className="rounded-lg bg-white/[0.03] px-2 py-1.5">
                   <div className="text-[8px] uppercase tracking-wider text-ink-500">Руны</div>
-                  <div className="mt-0.5 text-[11px] font-semibold text-white">{selected.metrics.runePickups}</div>
+                  <div className="mt-0.5 text-[11px] font-semibold text-white">{fmtNum(selected.metrics.runePickups)}</div>
                 </div>
               </div>
               {selected.wardPoints.length > 0 && (
@@ -243,7 +245,9 @@ export function MapTab({ analysis }: { analysis: MatchAnalysis; match?: unknown 
             )}
             {!hasWards && layer === 'wards' && (
               <div className="mt-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2 text-[10px] leading-relaxed text-ink-400">
-                {selected.hasTimeline ? 'Игрок не ставил вардов в этом матче.' : 'Нет данных о вардах: матч не распарсен.'}
+                {selected.coverage?.wards
+                  ? 'Игрок не ставил вардов в этом матче.'
+                  : 'Нет данных о вардах: матч не распарсен.'}
               </div>
             )}
           </div>
@@ -260,27 +264,32 @@ export function MapTab({ analysis }: { analysis: MatchAnalysis; match?: unknown 
             Сравни, кто реально отвечал за карту, а кто играл «без глаз».
           </p>
           <div className="mt-3 space-y-2">
-            {analysis.players
-              .filter((item) => item.role >= 4 || item.metrics.obsPlaced + item.metrics.senPlaced > 0)
-              .sort((a, b) => b.metrics.wardsPer10 - a.metrics.wardsPer10)
+            {!anyWardData && (
+              <div className="rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2 text-[10px] leading-relaxed text-ink-400">
+                Нет данных о вардах: матч загружен без парса. Оценка вижна не считается.
+              </div>
+            )}
+            {anyWardData && analysis.players
+              .filter((item) => item.role >= 4 || (item.metrics.obsPlaced ?? 0) + (item.metrics.senPlaced ?? 0) > 0)
+              .sort((a, b) => (b.metrics.wardsPer10 ?? 0) - (a.metrics.wardsPer10 ?? 0))
               .map((item) => (
                 <div key={item.player.slot} className="flex items-center gap-2.5">
                   <HeroAvatar hero={item.hero} size={24} side={item.player.isRadiant ? 'radiant' : 'dire'} />
                   <span className="w-24 truncate text-[10px] text-ink-200">{item.hero?.localized_name}</span>
                   <div className="flex-1 space-y-1">
                     <div className="flex gap-1">
-                      {Array.from({ length: Math.min(12, Math.ceil(item.metrics.obsPlaced / 2)) }).map((_, index) => (
+                      {Array.from({ length: Math.min(12, Math.ceil((item.metrics.obsPlaced ?? 0) / 2)) }).map((_, index) => (
                         <span key={`o-${index}`} className="h-1.5 w-2 rounded-sm bg-lime/70" />
                       ))}
                     </div>
                     <div className="flex gap-1">
-                      {Array.from({ length: Math.min(12, Math.ceil(item.metrics.senPlaced / 2)) }).map((_, index) => (
+                      {Array.from({ length: Math.min(12, Math.ceil((item.metrics.senPlaced ?? 0) / 2)) }).map((_, index) => (
                         <span key={`s-${index}`} className="h-1.5 w-2 rounded-sm bg-violet/70" />
                       ))}
                     </div>
                   </div>
                   <span className="w-16 text-right text-[9px] text-ink-400">
-                    {item.metrics.obsPlaced}о / {item.metrics.senPlaced}с
+                    {fmtNum(item.metrics.obsPlaced)}о / {fmtNum(item.metrics.senPlaced)}с
                   </span>
                 </div>
               ))}

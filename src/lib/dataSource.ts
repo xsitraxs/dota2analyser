@@ -6,17 +6,22 @@ import {
   fetchPlayer as openDotaPlayer,
   fetchRecentMatches as openDotaRecent,
   searchPlayers as openDotaSearch,
-  type PlayerProfile,
+  toPlayerProfile,
+  type PlayerProfileEnvelope,
   type RecentMatch,
 } from './openDota';
 import {
+  DETAILS_CONCURRENCY,
   SteamError,
+  findHistoryPlayer,
+  loadHistoryDetails,
   steamDetailsToRaw,
   steamMatchDetails,
   steamMatchHistory,
   steamPlayerSummaries,
   steamResolveVanity,
 } from './steam';
+import { checkApiBaseUrl } from './validate';
 
 export interface ProviderMeta {
   key: DataProvider;
@@ -75,6 +80,38 @@ export function proxyBase(settings: Settings): string | undefined {
   return value || undefined;
 }
 
+/**
+ * Проверяет адреса прокси из настроек.
+ * Пользовательские URL попадают прямо в fetch, поэтому формат проверяется
+ * до запроса: так мы не отправляем ключи по мусорному адресу.
+ */
+export function proxyUrlProblem(settings: Settings): AppError | null {
+  if (settings.provider === 'proxy') {
+    const check = checkApiBaseUrl(settings.proxyBase);
+    if (!proxyBase(settings)) {
+      return new AppError(
+        'proxy-config',
+        'Не указан адрес прокси.',
+        'Открой настройки и добавь базовый URL OpenDota-совместимого API (например, свой Cloudflare Worker).',
+      );
+    }
+    if (!check.ok) {
+      return new AppError('proxy-config', `Некорректный адрес прокси: ${check.error ?? 'проверь формат'}`, 'Нужен полный адрес вида https://example.com/api.');
+    }
+  }
+  if (settings.provider === 'steam' && settings.steamProxy.trim()) {
+    const check = checkApiBaseUrl(settings.steamProxy);
+    if (!check.ok) {
+      return new AppError(
+        'steam-config',
+        `Некорректный адрес прокси Steam: ${check.error ?? 'проверь формат'}`,
+        'Нужен полный адрес вида https://my-worker.example.com/steam.',
+      );
+    }
+  }
+  return null;
+}
+
 export function providerProblem(settings: Settings): AppError | null {
   if (settings.provider === 'steam' && !settings.steamKey.trim()) {
     return new AppError(
@@ -83,14 +120,7 @@ export function providerProblem(settings: Settings): AppError | null {
       'Бесплатный ключ: steamcommunity.com/dev/apikey. Вставь его в настройках — данные будут грузиться напрямую от Valve.',
     );
   }
-  if (settings.provider === 'proxy' && !proxyBase(settings)) {
-    return new AppError(
-      'proxy-config',
-      'Не указан адрес прокси.',
-      'Открой настройки и добавь базовый URL OpenDota-совместимого API (например, свой Cloudflare Worker).',
-    );
-  }
-  return null;
+  return proxyUrlProblem(settings);
 }
 
 function fromOpenDotaError(error: unknown): never {
@@ -100,7 +130,9 @@ function fromOpenDotaError(error: unknown): never {
         ? 'OpenDota может быть недоступна из России. Переключи источник на Valve в настройках или загрузи JSON вручную.'
         : error.code === 'rate'
           ? 'Подожди минуту, добавь ключ OpenDota или переключись на Valve.'
-          : undefined;
+          : error.code === 'proxy'
+            ? 'Проверь адрес прокси в настройках: нужен полный https:// адрес.'
+            : undefined;
     throw new AppError(`opendota-${error.code}`, error.message, hint);
   }
   throw error;
@@ -164,20 +196,36 @@ export async function fetchRecentMatches(
         { key: settings.steamKey, base: settings.steamProxy, signal },
         limit,
       );
-      return history.map((match) => ({
-        match_id: match.match_id,
-        player_slot: match.player_slot,
-        radiant_win: Boolean(match.radiant_win),
-        duration: match.duration,
-        game_mode: match.game_mode ?? 0,
-        lobby_type: match.lobby_type,
-        hero_id: match.hero_id,
-        start_time: match.start_time,
-        kills: match.kills,
-        deaths: match.deaths,
-        assists: match.assists,
-        average_rank: match.avg_rank_tier ?? null,
-      }));
+      // GetMatchHistory не содержит ни результата, ни длительности, ни KDA:
+      // эти поля есть только в GetMatchDetails. Догружаем с ограничением
+      // параллельности, а недоступные матчи оставляем без выдуманных значений.
+      const details = await loadHistoryDetails(
+        history,
+        { key: settings.steamKey, base: settings.steamProxy, signal },
+        DETAILS_CONCURRENCY,
+      );
+      return history.map((match): RecentMatch => {
+        const player = findHistoryPlayer(match, accountId);
+        const detail = details.get(match.match_id);
+        const me = detail
+          ? detail.players.find((candidate) => Number(candidate.account_id) === accountId)
+          : undefined;
+        return {
+          match_id: match.match_id,
+          player_slot: player?.player_slot ?? me?.player_slot ?? null,
+          radiant_win: detail ? Boolean(detail.radiant_win) : null,
+          duration: detail?.duration ?? null,
+          game_mode: detail?.game_mode ?? null,
+          lobby_type: match.lobby_type ?? detail?.lobby_type ?? null,
+          hero_id: player?.hero_id ?? me?.hero_id ?? null,
+          start_time: match.start_time || detail?.start_time || 0,
+          kills: me?.kills ?? null,
+          deaths: me?.deaths ?? null,
+          assists: me?.assists ?? null,
+          average_rank: null,
+          hasDetails: Boolean(detail),
+        };
+      });
     } catch (error) {
       if (error instanceof SteamError) throw new AppError(`steam-${error.code}`, error.message, error.hint);
       throw error;
@@ -185,7 +233,8 @@ export async function fetchRecentMatches(
   }
 
   try {
-    return await openDotaRecent(accountId, settings.apiKey, signal, limit, proxyBase(settings));
+    const matches = await openDotaRecent(accountId, settings.apiKey, signal, limit, proxyBase(settings));
+    return matches.map((match) => ({ ...match, hasDetails: true }));
   } catch (error) {
     return fromOpenDotaError(error);
   }
@@ -218,17 +267,19 @@ export async function fetchProfile(accountId: number, settings: Settings): Promi
   }
 
   try {
-    const profile: PlayerProfile = await openDotaPlayer(
+    const envelope: PlayerProfileEnvelope = await openDotaPlayer(
       accountId,
       settings.apiKey,
       undefined,
       proxyBase(settings),
     );
+    // Имя и аватар лежат во вложенном profile, rank_tier — в корне ответа.
+    const profile = toPlayerProfile(accountId, envelope);
     return {
       accountId,
-      name: profile.personaname ?? null,
-      avatar: profile.avatarfull ?? null,
-      rankTier: profile.rank_tier ?? null,
+      name: profile.name,
+      avatar: profile.avatar,
+      rankTier: profile.rankTier,
     };
   } catch (error) {
     return fromOpenDotaError(error);

@@ -19,11 +19,10 @@ import { buildCoachReport } from '../../lib/insights';
 import { DIMENSION_META } from '../../lib/constants';
 import { getLesson } from '../../data/lessons';
 import { fmtNum, fmtPct, fmtTime } from '../../lib/format';
-import { matchPath } from '../../lib/router';
 import { loadPlan, togglePlanTask } from '../../lib/storage';
-import type { CoachReport, Insight, InsightSeverity, Match, MatchAnalysis, PlayerAnalysis } from '../../types';
+import type { CoachReport, Insight, InsightSeverity, Match, MatchAnalysis } from '../../types';
 import { RadarChart } from '../../components/charts';
-import { Bar, HeroAvatar, RoleBadge, ScoreRing, SIDE_COLOR, SIDE_LABEL, SectionHeading } from '../../components/ui';
+import { Bar, HeroAvatar, ScoreRing, SIDE_COLOR, SIDE_LABEL, SectionHeading } from '../../components/ui';
 
 const SEVERITY_META: Record<InsightSeverity, { label: string; color: string; icon: ReactNode }> = {
   critical: { label: 'Критично', color: '#FF6B62', icon: <CircleAlert size={13} /> },
@@ -434,7 +433,10 @@ export function ReportPanel({
                   { label: 'Участие в драках', value: fmtPct(current.metrics.fightInvolvement) },
                   { label: 'Урон/мин', value: fmtNum(current.metrics.damagePerMin) },
                   { label: 'Нетворс', value: fmtNum(current.player.netWorth) },
-                  { label: 'Вардов/10 мин', value: current.metrics.wardsPer10.toFixed(2) },
+                  {
+                    label: 'Вардов/10 мин',
+                    value: current.metrics.wardsPer10 == null ? '—' : current.metrics.wardsPer10.toFixed(2),
+                  },
                   { label: 'Смертей/10 мин', value: current.metrics.deathsPer10.toFixed(1) },
                 ].map((item) => (
                   <div key={item.label} className="rounded-lg bg-white/[0.03] px-2.5 py-2">

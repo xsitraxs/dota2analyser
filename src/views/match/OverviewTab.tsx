@@ -101,13 +101,23 @@ export function MatchHeader({ match }: { match: Match }) {
 }
 
 function TeamCompare({ match, analysis }: { match: Match; analysis: MatchAnalysis }) {
-  const rows: { label: string; radiant: number; dire: number; format: (value: number) => string; icon: ReactNode }[] = [
+  const rows: {
+    label: string;
+    radiant: number;
+    dire: number;
+    format: (value: number) => string;
+    icon: ReactNode;
+  }[] = [
     { label: 'Убийства', radiant: analysis.teams.radiant.kills, dire: analysis.teams.dire.kills, format: (v) => fmtNum(v), icon: <Swords size={12} /> },
     { label: 'Нетворс', radiant: analysis.teams.radiant.netWorth, dire: analysis.teams.dire.netWorth, format: (v) => fmtCompact(v), icon: <CircleDollarSign size={12} /> },
     { label: 'Урон героям', radiant: analysis.teams.radiant.heroDamage, dire: analysis.teams.dire.heroDamage, format: (v) => fmtCompact(v), icon: <Flame size={12} /> },
     { label: 'Башни', radiant: analysis.teams.radiant.towers, dire: analysis.teams.dire.towers, format: (v) => fmtNum(v), icon: <Target size={12} /> },
     { label: 'Драки', radiant: analysis.teams.radiant.fightsWon, dire: analysis.teams.dire.fightsWon, format: (v) => fmtNum(v), icon: <Activity size={12} /> },
-    { label: 'Варды', radiant: analysis.teams.radiant.wards, dire: analysis.teams.dire.wards, format: (v) => fmtNum(v), icon: <Eye size={12} /> },
+    // Варды и Рошан показываются только когда соответствующие данные реально есть:
+    // отсутствие источника не означает «ноль событий».
+    ...(analysis.teams.radiant.wards != null && analysis.teams.dire.wards != null
+      ? [{ label: 'Варды', radiant: analysis.teams.radiant.wards, dire: analysis.teams.dire.wards, format: (v: number) => fmtNum(v), icon: <Eye size={12} /> }]
+      : []),
   ];
   const goldTimeline = useMemo(
     () => match.goldAdv.map((value, index) => ({ x: index, y: value })),
@@ -364,7 +374,13 @@ function MyReportBanner({ match, analysis, mySlot }: { match: Match; analysis: M
 }
 
 export function OverviewTab({ match, analysis, mySlot }: { match: Match; analysis: MatchAnalysis; mySlot: number | null }) {
-  const totalWards = match.players.reduce((acc, p) => acc + p.obsPlaced + p.senPlaced, 0);
+  const wardTotals = match.coverage.wards
+    ? {
+        total: match.players.reduce((acc, p) => acc + (p.obsPlaced ?? 0) + (p.senPlaced ?? 0), 0),
+        obs: match.players.reduce((acc, p) => acc + (p.obsPlaced ?? 0), 0),
+        sen: match.players.reduce((acc, p) => acc + (p.senPlaced ?? 0), 0),
+      }
+    : null;
   const totalDeaths = match.players.reduce((acc, p) => acc + p.deaths, 0);
   const biggestFight = [...analysis.fights].sort((a, b) => b.deaths - a.deaths || b.totalDamage - a.totalDamage)[0];
 
@@ -400,7 +416,7 @@ export function OverviewTab({ match, analysis, mySlot }: { match: Match; analysi
       <div className="grid gap-4 lg:grid-cols-4">
         <StatTile label="Всего убийств" value={match.radiantScore + match.direScore} sub={`${match.radiantScore} / ${match.direScore}`} icon={<Swords size={15} />} />
         <StatTile label="Смертей" value={totalDeaths} sub={fmtPct(totalDeaths / Math.max(1, match.radiantScore + match.direScore))} icon={<Skull size={15} />} />
-        <StatTile label="Вардов" value={totalWards} sub={`${match.players.reduce((a, p) => a + p.obsPlaced, 0)} обс · ${match.players.reduce((a, p) => a + p.senPlaced, 0)} сентари`} icon={<Eye size={15} />} />
+        <StatTile label="Вардов" value={wardTotals ? wardTotals.total : '—'} sub={wardTotals ? `${wardTotals.obs} обс · ${wardTotals.sen} сентари` : 'нет данных о вардах'} icon={<Eye size={15} />} />
         <StatTile
           label="Главная драка"
           value={biggestFight ? fmtTime(biggestFight.start) : '—'}

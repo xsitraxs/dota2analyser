@@ -75,19 +75,40 @@ export interface Player {
   obsLog: WardPoint[];
   senLog: WardPoint[];
   lanePos: Record<string, Record<string, number>> | null;
-  obsPlaced: number;
-  senPlaced: number;
-  campsStacked: number;
-  runePickups: number;
-  roshansKilled: number;
-  stuns: number;
-  maxHeroHit: number;
+  /** null — метрика неизвестна (нет соответствующего источника), 0 — измеренный ноль. */
+  obsPlaced: number | null;
+  senPlaced: number | null;
+  campsStacked: number | null;
+  runePickups: number | null;
+  roshansKilled: number | null;
+  stuns: number | null;
+  maxHeroHit: number | null;
   multiKills: Record<string, number>;
   killStreaks: Record<string, number>;
   itemUses: Record<string, number>;
   abilityUses: Record<string, number>;
   teamfightParticipation: number | null;
   isParsed: boolean;
+}
+
+/**
+ * Признаки наличия данных по независимым возможностям.
+ *
+ * Один общий флаг `parsed` недостаточен: источник может отдать таймлайны,
+ * но не отдать варды, или наоборот. Без этих флагов «нет данных»
+ * превращалось в «ноль событий» и штрафовало игрока.
+ */
+export interface MatchCoverage {
+  /** Таймлайны золота/опыта (есть хотя бы у одного игрока). */
+  timelines: boolean;
+  /** Варды: логи постановки или счётчики obs/sen. */
+  wards: boolean;
+  /** Командные драки. */
+  fights: boolean;
+  /** Список событий матча (Рошан, башни, первая кровь). */
+  objectives: boolean;
+  /** Журнал покупок. */
+  purchases: boolean;
 }
 
 export type ObjectiveKind =
@@ -169,8 +190,11 @@ export interface Match {
   teamfights: Teamfight[];
   goldAdv: number[];
   xpAdv: number[];
+  /** Есть распарсенные таймлайны хотя бы у одного игрока. */
   parsed: boolean;
   hasTimelines: boolean;
+  /** Что именно есть в данных (таймлайны, варды, драки, объекты, покупки). */
+  coverage: MatchCoverage;
   demo: DemoMeta | null;
   warnings: string[];
 }
@@ -217,21 +241,22 @@ export interface PlayerMetrics {
   healingPerMin: number;
   towerDamagePerMin: number;
   netWorthShare: number;
-  wardsPer10: number;
-  senPer10: number;
-  obsPlaced: number;
-  senPlaced: number;
+  /** null, если данные о вардах отсутствуют (неизвестно ≠ 0). */
+  wardsPer10: number | null;
+  senPer10: number | null;
+  obsPlaced: number | null;
+  senPlaced: number | null;
   wardsScore: number;
-  campsStacked: number;
-  runePickups: number;
+  campsStacked: number | null;
+  runePickups: number | null;
   earlyDeaths: number;
   deathTimes: number[];
   missedFights: number;
   fightCount: number;
   fightDeaths: number;
   buybacks: number;
-  roshansKilled: number;
-  stuns: number;
+  roshansKilled: number | null;
+  stuns: number | null;
   gpmWindows: GpmWindow[];
   firstDeath: number | null;
 }
@@ -266,6 +291,12 @@ export interface PlayerAnalysis {
   bkbTiming: number | null;
   blinkTiming: number | null;
   hasTimeline: boolean;
+  /** Признаки наличия данных у этого игрока. */
+  coverage: {
+    timelines: boolean;
+    wards: boolean;
+    purchases: boolean;
+  };
 }
 
 export interface TeamSummary {
@@ -276,9 +307,11 @@ export interface TeamSummary {
   netWorth: number;
   heroDamage: number;
   towers: number;
-  roshans: number;
+  /** null — список событий матча недоступен, число Рошанов неизвестно. */
+  roshans: number | null;
   fightsWon: number;
-  wards: number;
+  /** null — данные о вардах отсутствуют. */
+  wards: number | null;
   gpm: number;
   avgScore: number | null;
 }
