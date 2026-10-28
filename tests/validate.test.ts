@@ -71,7 +71,7 @@ describe('состав игроков', () => {
   });
 
   it('отклоняет дубли slot', () => {
-    const dup = ok.map((player, index) => ({ player_slot: index === 9 ? 0 : index }));
+    const dup = ok.map((_player, index) => ({ player_slot: index === 9 ? 0 : index }));
     expect(() => validatePlayers(dup)).toThrow(MatchDataError);
   });
 
